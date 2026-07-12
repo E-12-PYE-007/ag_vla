@@ -20,9 +20,6 @@ ag_vla/
     │   ├── action_proj--750000_checkpoint.pt
     │   └── shead--750000_checkpoint.pt
     │
-    ├── config_nav/
-    │   └── dataset_config.yaml                     ← nav architecture config
-    │
     ├── data/
     │   ├── fenceline/                              ← dataset
     │   └── roadside/
