@@ -1,43 +1,59 @@
+## Repository layout
+
 ```
 ag_vla/
-    ├── AsyncVLA/                                   ← git submodule (pinned commit)
+    ├── AsyncVLA/                                   ← git submodule (lyamatomato/AsyncVLA fork)
     │   ├── prismatic/                              ← model architecture code
     │   ├── experiments/                            ← openvla utilities
     │   └── ...
     │
-    ├── training/                                   ← training scripts
-    │   ├── dataset.py
-    │   ├── log.py
-    │   ├── finetune.py
-    │   ├── eval.py
-    │   ├── environment.yml
-    │   └── submit_spartan.sh   
+    ├── training/                                  
+    │   ├── finetune.py                             
+    │   ├── log.py                                  
+    │   ├── requirements.txt                        ← dependency notes (see setup_spartan.sh)
+    │   ├── setup_spartan.sh                        ← one-time Spartan environment setup
+    │   └── submit_spartan.slurm                    ← SLURM job submission script
     │
-    ├── inference/                                  ← inference scripts
+    └── inference/                                  ← inference scripts
+```
+
+## Spartan project storage layout
+
+All large files live under `/data/gpfs/projects/<project-id>/` on Spartan (not in this repo).
+
+```
+/data/gpfs/projects/<project-id>/
+    ├── ag_vla/
+    │   ├── AsyncVLA/                               ← git submodule clone
+    │   └── visualnav-transformer/                  ← editable install dependency
     │
-    ├── weights/                                    ← relevant checkpoints
-    │   ├── proprio_projector--285000_checkpoint.pt
-    │   ├── action_proj--750000_checkpoint.pt
-    │   └── shead--750000_checkpoint.pt
+    ├── weights/
+    │   └── omnivla_release/                        ← OmniVLA head checkpoints
+    │       └── proprio_projector--285000_checkpoint.pt
     │
     ├── data/
-    │   ├── fenceline/                              ← dataset
-    │   └── roadside/
+    │   └── fenceline/                              ← training dataset (~1000 samples)
     │
-    └── out/                                        ← created at training time
-        └── finetune/
-        │   ├── training_logs/  
-        │   │   └── train_20260709_142301.log
-        │   └── step-0050000/
-        │       ├── lora_adapter/
-        │       ├── tokenizer.json
-        │       ├── preprocessor_config.json
-        │       ├── pose_projector--50000_checkpoint.pt
-        │       ├── action_proj--50000_checkpoint.pt
-        │       ├── shead--50000_checkpoint.pt
-        │       └── eval/
-        │           ├── eval_20260709_190012.log
-        │           ├── metrics.json
-        │           └── trajectories/
-        └── actionhead/
+    ├── out/                                        ← created at training time
+    │   └── finetune/
+    │       ├── training_logs/
+    │       │   └── train_20260709_142301.log
+    │       └── step-0010000/
+    │           ├── lora_adapter/
+    │           ├── tokenizer.json
+    │           ├── preprocessor_config.json
+    │           ├── pose_projector--10000_checkpoint.pt
+    │           ├── action_proj--10000_checkpoint.pt
+    │           ├── action_head--10000_checkpoint.pt
+    │           └── eval/
+    │               ├── eval_20260709_190012.log
+    │               ├── metrics.json
+    │               └── trajectories/
+    │
+    ├── venvs/
+    │   └── training/
+    │       └── finetune/                           ← virtualenv (PyTorch, transformers, etc.)
+    │
+    └── .cache/
+        └── huggingface/                            ← HF model cache (~15 GB for OmniVLA)
 ```
