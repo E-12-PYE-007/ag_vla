@@ -1,0 +1,28 @@
+datasets:
+  scand:
+    type: rosbag
+    bags_dir: bags
+    pattern: "A_Jackal_*.bag"
+    out_root: processed_mixed/scand
+    image_topic: "/REAL/IMAGE/TOPIC"
+    odom_topic: "/REAL/ODOM/TOPIC"
+    horizon: 8
+    waypoint_dt: 0.5
+    image_stride: 5
+    sync_threshold: 0.10
+    max_final_distance: 5.0
+    max_abs_yaw: 3.14
+
+  recon:
+    type: recon
+    input_root: raw_recon/recon_release
+    selection_json: configs/recon_clean_10h_distance.json
+    out_root: processed_mixed/recon
+    horizon: 8
+    sampling_mode: distance
+    target_spacing_m: 0.25
+    frame_stride: 1
+    frame_dt: 1.0
+    min_final_distance: 0.5
+    max_final_distance: 4.0
+    max_abs_yaw: 3.14

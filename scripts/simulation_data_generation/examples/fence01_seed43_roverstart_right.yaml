@@ -1,0 +1,152 @@
+config_generation_source: configs/base_configs/fence01.yaml
+seed: 43
+rover_pose:
+  position:
+  - -2.0
+  - -0.8
+  - 0.0
+  yaw: 0
+  scale: 1.0
+fences:
+- name: main_fence
+  start:
+  - -3.0
+  - 0.0
+  end:
+  - 6.0
+  - 0.0
+  spacing: 3.0
+  post_scale: 1.0
+  wire_scale: 1.0
+  wire_z_rot_offset: 0.0
+obstacles:
+- type: plant
+  name: grass
+  position:
+  - 0.4698390429100563
+  - 1.531901029529796
+  yaw: -0.4142617513264195
+- type: plant
+  name: grass
+  position:
+  - -3.2381189571531044
+  - 2.1052515107678333
+  yaw: 2.011999818350384
+- type: plant
+  name: grass
+  position:
+  - -1.2414171432355117
+  - -2.4255413192235413
+  yaw: 0.07810210307186916
+- type: plant
+  name: grass
+  position:
+  - 0.7515892521917582
+  - -0.7384488852233462
+  yaw: -2.834218457628755
+- type: plant
+  name: grass
+  position:
+  - -4.38789321581875
+  - 2.6514216837916766
+  yaw: 2.130615037303321
+- type: plant
+  name: shrub
+  position:
+  - -2.0384021643341055
+  - 2.332513648735505
+  yaw: 0.13981789689884527
+- type: plant
+  name: grass
+  position:
+  - 0.8437706272294756
+  - 2.5967235557623836
+  yaw: 1.1262705628429392
+- type: plant
+  name: grass
+  position:
+  - -4.059012916326874
+  - 0.7364859785476803
+  yaw: 1.8025571982178459
+- type: plant
+  name: grass
+  position:
+  - 3.9891324731257445
+  - -1.01235006763716
+  yaw: 0.18152998824360855
+- type: plant
+  name: grass
+  position:
+  - 2.0115514426521397
+  - -1.9990901145485915
+  yaw: 2.188806775655048
+- type: plant
+  name: grass
+  position:
+  - 2.8086527675049053
+  - -2.699416508836162
+  yaw: 0.5743350327991728
+- type: plant
+  name: shrub
+  position:
+  - 0.519698237080588
+  - -2.320188792183722
+  yaw: -0.03186757665841711
+- type: miscellaneous
+  name: log
+  position:
+  - 4.665549428382835
+  - 0.6111677783871508
+  yaw: -2.616013911164853
+- type: miscellaneous
+  name: log
+  position:
+  - -3.728432681786642
+  - -2.4826332238235986
+  yaw: 1.0354904949258827
+- type: miscellaneous
+  name: log
+  position:
+  - -0.569233478073679
+  - -2.772155904178291
+  yaw: -3.1257597367746808
+- type: miscellaneous
+  name: boulder
+  position:
+  - 4.035302459556268
+  - 2.8596459401290657
+  yaw: -2.3604661774434534
+assets:
+  fence_post: assets/fence_post.usd
+  fence_wire: assets/fence_wire.usd
+  rover: assets/rover_system/WASD.usd
+  plants:
+    grass:
+      usd: assets/plants/fountain_grass_short.usd
+      scale: 1
+      bbox_size:
+      - 1
+      - 1
+      - 1
+    shrub:
+      usd: assets/plants/yew.usd
+      scale: 1
+      bbox_size:
+      - 1
+      - 1
+      - 1
+  obstacles:
+    boulder:
+      usd: assets/obstacles/boulder.usd
+      scale: 1
+      bbox_size:
+      - 0.8
+      - 0.8
+      - 0.5
+    log:
+      usd: assets/obstacles/log.usd
+      scale: 1
+      bbox_size:
+      - 1.2
+      - 0.4
+      - 0.4
