@@ -27,7 +27,6 @@ from fenceline.train_e2e_finetune import delta_to_pose
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction_MMNv1
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
-from prismatic.models.projectors import ProprioProjector
 from prismatic.models.small_head import Proj_Actiontokens
 from prismatic.training.train_utils import get_current_action_mask, get_next_actions_mask
 from prismatic.vla.action_tokenizer import ActionTokenizer
@@ -134,16 +133,7 @@ def load_omnivla_for_finetune():
 
     return vla, processor
 
-def load_support_modules(llm_dim: int) -> Tuple[nn.Module, nn.Module]:
-    # Load OmniVLA's proprio_projector (NOT REQUIRED BUT USED)
-    #   Maps robot's current pose into LLM's token space
-    pose_projector = _load_module(
-        ProprioProjector,
-        _get_ckpt_path("proprio_projector"),
-        llm_dim=llm_dim,
-        proprio_dim=POSE_DIM,
-    ).to(torch.bfloat16).to(DEVICE)
-
+def load_support_modules(llm_dim: int) -> nn.Module:
     #TODO: action_dim depends on action_head architecture
     # Load AsyncVLA's action_projector with empty weights
     #   Compresses LLM hidden states
@@ -156,7 +146,7 @@ def load_support_modules(llm_dim: int) -> Tuple[nn.Module, nn.Module]:
     #     action_dim=
     # ).to(torch.bfloat16).to(DEVICE)
 
-    return pose_projector, action_projector
+    return action_projector
 
 def load_optimiser_scheduler(vla):
     trainable = (
@@ -248,7 +238,6 @@ def _delta_to_pose(delta: torch.Tensor) -> torch.Tensor:
 def omnivla_forward_pass(
     vla,
     batch: dict,
-    pose_projector: nn,
     num_patches: int,
     no_grad: bool
 ) -> torch.Tensor:
@@ -268,7 +257,6 @@ def omnivla_forward_pass(
             # labels=
             output_hidden_states=True,
             # proprio=
-            proprio_projector=pose_projector,
             use_film=False,
         )
 
@@ -399,7 +387,7 @@ def main() -> None:
 
      # Load supporting modules: pose_projector (pose → LLM token space) and action_proj (LLM hidden states → action space)
     llm_dim = vla.base_model.model.llm_dim
-    pose_projector, action_projector = load_support_modules(llm_dim)
+    action_projector = load_support_modules(llm_dim)
 
     #TODO: load action head
     action_head = Optional()
@@ -410,12 +398,11 @@ def main() -> None:
     
     wandb_run = setup_wandb()
 
-    # num_patches = patches per image × num_images + 1 proprio token
+    # num_patches = patches per image × num_images
     #   patch = grid of 16 x 16 pixels
     num_patches = (
         vla.base_model.model.vision_backbone.get_num_patches()
         * vla.base_model.vision_backbone.get_num_images_in_input()
-        + 1
     )
 
     # Training main loop
@@ -429,7 +416,7 @@ def main() -> None:
 
     while True:
         for batch in train_set:
-            hidden_action_states = omnivla_forward_pass(vla, pose_projector, batch, num_patches, no_grad=False)
+            hidden_action_states = omnivla_forward_pass(vla, batch, num_patches, no_grad=False)
             loss, metrics = action_head_forward_pass(hidden_action_states, action_projector, action_head, batch)
 
             # Run back propagation and store it with each weight
