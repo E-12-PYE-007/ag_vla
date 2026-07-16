@@ -23,14 +23,13 @@ from peft import LoraConfig, get_peft_model
 # Weights and Biases - platform for tracking and logging training
 import wandb
 
-from fenceline.train_e2e_finetune import delta_to_pose
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction_MMNv1
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
 from prismatic.models.small_head import Proj_Actiontokens
 from prismatic.training.train_utils import get_current_action_mask, get_next_actions_mask
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK, POSE_DIM
+from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK
 
 from training import logger
 
@@ -316,7 +315,6 @@ def save_checkpoint(
     step: int,
     vla,
     processor,
-    pose_projector: nn.Module,
     action_projector: nn.Module,
     action_head: nn.Module,
 ) -> None:
@@ -331,7 +329,6 @@ def save_checkpoint(
 
     # torch.save(): writes the weights dictionary with no metadata
     #   you need to instantiate the class and call load_state_dict() to fill in the weights
-    torch.save(pose_projector.state_dict(), ckpt_dir / f"pose_projector--{step}_checkpoint.pt")
     torch.save(action_projector.state_dict(), ckpt_dir / f"action_projector--{step}_checkpoint.pt")
     torch.save(action_head.state_dict(), ckpt_dir / f"action_head--{step}_checkpoint.pt")
     logger.info(f"Checkpoint saved → {ckpt_dir}")
@@ -341,18 +338,16 @@ def validate(
     vla,
     action_projector: Proj_Actiontokens,
     action_head: nn.Module,
-    pose_projector: nn.Module,
     val_set: DataLoader,
     num_patches: int,
 ) -> Dict[str, float]:
     vla.eval()
     action_head.eval()
-    pose_projector.eval()
 
     all_metrics: Dict[str, float] = {}
     count = 0
     for batch in val_set:
-        hidden_action_states = omnivla_forward_pass(vla, pose_projector, batch, num_patches)
+        hidden_action_states = omnivla_forward_pass(vla, batch, num_patches)
         _, metrics = action_head_forward_pass(hidden_action_states, action_projector, action_head, batch)
         # For every batch compute average metric values
         for k, v in metrics.items():
@@ -364,7 +359,6 @@ def validate(
     vla.train()
     action_projector.train()
     action_head.train()
-    pose_projector.train()
 
     return {k: v / count for k, v in all_metrics.items()}
 
@@ -457,7 +451,6 @@ def main() -> None:
                     weight_update_step, 
                     vla, 
                     processor,
-                    pose_projector,
                     action_projector,
                     action_head
                 )
@@ -467,7 +460,6 @@ def main() -> None:
                     vla,
                     action_projector,
                     action_head,
-                    pose_projector,
                     val_set,
                     num_patches
                 )
@@ -487,7 +479,6 @@ def main() -> None:
                     weight_update_step,
                     vla,
                     processor,
-                    pose_projector,
                     action_projector,
                     action_head
                 )
