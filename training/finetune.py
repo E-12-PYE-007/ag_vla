@@ -48,9 +48,8 @@ WANDB_ENTITY = "e-12-pye-007-capstone-baddies"
 
 @dataclass
 class PathConfig:
-    omnivla_dir: str = "./omnivla_release"
-    data_dir:    str = "./data"
-    out_dir:     str = "./out/finetune"
+    data_dir: str = "./data"
+    out_dir:  str = "./out/finetune"
 
 #TODO: these might need to be customisable at runtime, also research
 # Initial values are from AsyncVLA
@@ -150,7 +149,7 @@ def load_support_modules(llm_dim: int) -> nn.Module:
 def load_optimiser_scheduler(vla):
     trainable = (
         [p for p in vla.parameters() if p.requires_grad]
-        #TODO: list all the parameters for action_projector, pose_projector and action_head
+        #TODO: list all the parameters for action_projector and action_head
     )
     logger.info(f"Total trainable parameters:  {sum(p.numel() for p in trainable):,}")
     
@@ -203,7 +202,7 @@ def _load_module(
     #           "linear1.bias":   tensor([...])
     #        }
     sd = torch.load(module_path, map_location=DEVICE, weights_only=True)
-    result = torch.load_state_dict({k.replace("module.", ""): v for k, v in sd.items()}, strict=False)
+    result = module.load_state_dict({k.replace("module.", ""): v for k, v in sd.items()}, strict=False)
     if result.missing_keys:
         logger.warn(f"[{module_class.__name__}] missing keys: {result.missing_keys}")
     if result.unexpected_keys:
@@ -283,7 +282,7 @@ def action_head_forward_pass(
 
     # Convert hidden states to compact trajectory tokens
     projected_action_states = action_projector.predict_action(
-        hidden_action_states, MODALITY_ID.to(torch.bfloat16).to(DEVICE)
+        hidden_action_states, MODALITY_ID
     )
 
     #TODO: Run through action head
@@ -292,7 +291,7 @@ def action_head_forward_pass(
     
     # Generate the waypoints that are shifted by one step forward
     # This is used to determine how smooth the path is (penalities are applied for sudden jumps in waypoints)
-    origin = torch.zeros(_train_params.batch_size, 1, ACTION_DIM, DEVICE, dtype=torch.bfloat16)
+    origin = torch.zeros(_train_params.batch_size, 1, ACTION_DIM, device=DEVICE, dtype=torch.bfloat16)
     origin[:, :, 2] = torch.cos(torch.tensor(0.0))
     origin[:, :, 3] = torch.sin(torch.tensor(0.0))
     gt_waypoints_shifted = torch.cat([origin, predicted_waypoints[:, :-1]], dim=1)
@@ -333,7 +332,6 @@ def save_checkpoint(
     torch.save(action_head.state_dict(), ckpt_dir / f"action_head--{step}_checkpoint.pt")
     logger.info(f"Checkpoint saved → {ckpt_dir}")
 
-@torch.no_grad()
 def validate(
     vla,
     action_projector: Proj_Actiontokens,
@@ -347,8 +345,8 @@ def validate(
     all_metrics: Dict[str, float] = {}
     count = 0
     for batch in val_set:
-        hidden_action_states = omnivla_forward_pass(vla, batch, num_patches)
-        _, metrics = action_head_forward_pass(hidden_action_states, action_projector, action_head, batch)
+        hidden_action_states = omnivla_forward_pass(vla, batch, num_patches, no_grad=True)
+        _, metrics = action_head_forward_pass(hidden_action_states, action_projector, action_head)
         # For every batch compute average metric values
         for k, v in metrics.items():
             if k not in all_metrics:
@@ -379,7 +377,7 @@ def main() -> None:
     #   Batch normalisation - a techniques that normalises the values flowing through a layer during training to keep them in a stable range. In eval mode it uses data acquired during training
     vla.train()
 
-     # Load supporting modules: pose_projector (pose → LLM token space) and action_proj (LLM hidden states → action space)
+     # Load supporting modules: action_projector (LLM hidden states → action space)
     llm_dim = vla.base_model.model.llm_dim
     action_projector = load_support_modules(llm_dim)
 

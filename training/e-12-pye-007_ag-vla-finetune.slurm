@@ -34,7 +34,7 @@ module purge
 # Loads the GCC compiler and Python 3.10.4
 # For Spartan, the Python version must be explicitly stated
 # GCCore is the C compiler that Python and many packages depend on
-module load GCCore/11.3.0 Python/3.10.4
+module load GCCcore/11.3.0 Python/3.10.4
 
 # Loads the CUDA toolkit - the NVIDIA compiler and libraries that GPU code runs on
 module load CUDA/12.1.1
