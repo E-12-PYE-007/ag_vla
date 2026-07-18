@@ -1,6 +1,7 @@
 import os
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -30,8 +31,6 @@ from prismatic.models.small_head import Proj_Actiontokens
 from prismatic.training.train_utils import get_current_action_mask, get_next_actions_mask
 from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK
-
-from training import logger
 
 # Disable HF's tokenizer library, which uses multiple threads to process text faster
 # We want to use parallelism for loading image data instead in DataLoader
@@ -151,7 +150,7 @@ def load_optimiser_scheduler(vla):
         [p for p in vla.parameters() if p.requires_grad]
         #TODO: list all the parameters for action_projector and action_head
     )
-    logger.info(f"Total trainable parameters:  {sum(p.numel() for p in trainable):,}")
+    print(f"Total trainable parameters: {sum(p.numel() for p in trainable):,}")
     
     optimiser = AdamW(trainable, lr=_train_params.learning_rate)
     scheduler = MultiStepLR(optimiser, milestones=[_train_params.num_steps_before_decay], gamma=_train_params.gamma)
@@ -167,18 +166,25 @@ def setup_wandb():
     return wandb.init(
         entity=WANDB_ENTITY,
         project=WANDB_PROJECT,
-        name=f"finetune+r{_lora_adapter.rank}",
+        name=(
+            f"r{_lora_adapter.rank}"
+            f"_a{_lora_adapter.alpha}"
+            f"_dora{int(_lora_adapter.use_dora)}"
+            f"_lr{_train_params.learning_rate}"
+            f"_bs{_train_params.batch_size}"
+        ),
         config={
             "model":                  OMNIVLA_MODEL_ID,
             "omnivla_step":           OMNIVLA_STEP,
             "lora_rank":              _lora_adapter.rank,
+            "lora_alpha":             _lora_adapter.alpha,
             "lora_dropout":           _lora_adapter.dropout,
             "use_dora":               _lora_adapter.use_dora,
             "learning_rate":          _train_params.learning_rate,
             "batch_size":             _train_params.batch_size,
             "max_steps":              _train_params.max_steps,
             "grad_accumulation":      _train_params.grad_accumulation_steps,
-            "num_steps_before_decay": _train_params.num_steps_before_decay, 
+            "num_steps_before_decay": _train_params.num_steps_before_decay,
         }
     )
 
@@ -191,7 +197,7 @@ def _load_module(
 
     if not module_path.exists():
         msg = f"[{module_class.__name__}] checkpoint not found: {module_path}"
-        logger.error(msg)
+        print(f"[ERROR] {msg}")
         raise FileNotFoundError(msg)
 
     # Define state dict (PyTorch's name for a dict of all a module's weights)
@@ -204,10 +210,10 @@ def _load_module(
     sd = torch.load(module_path, map_location=DEVICE, weights_only=True)
     result = module.load_state_dict({k.replace("module.", ""): v for k, v in sd.items()}, strict=False)
     if result.missing_keys:
-        logger.warn(f"[{module_class.__name__}] missing keys: {result.missing_keys}")
+        print(f"[WARN] [{module_class.__name__}] missing keys: {result.missing_keys}")
     if result.unexpected_keys:
-        logger.warn(f"[{module_class.__name__}] unexpected keys: {result.unexpected_keys}")
-    logger.info(f"[{module_class.__name__}] loaded from {module_path}")
+        print(f"[WARN] [{module_class.__name__}] unexpected keys: {result.unexpected_keys}")
+    print(f"[{module_class.__name__}] loaded from {module_path}")
     return module
 
 def _get_ckpt_path(name: str) -> Path:
@@ -275,10 +281,10 @@ def action_head_forward_pass(
         action_projector: Proj_Actiontokens,
         action_head,
         batch: dict,
-) -> Tuple[torch.Tensor, Dict[str, float]]:
-    
+) -> Tuple[torch.Tensor, Dict[str, float], torch.Tensor, Optional[torch.Tensor]]:
+
     #TODO: extract ground truths
-    gt_waypoint_norm = Optional()
+    gt_waypoint_norm = None
 
     # Convert hidden states to compact trajectory tokens
     projected_action_states = action_projector.predict_action(
@@ -308,12 +314,11 @@ def action_head_forward_pass(
         "mse_obj": obj_loss.item(),
         "mse_smooth": smooth_loss.item(),
     }
-    return loss, metrics
+    return loss, metrics, predicted_waypoints.detach().cpu().float(), gt_waypoint_norm
 
 def save_checkpoint(
     step: int,
     vla,
-    processor,
     action_projector: nn.Module,
     action_head: nn.Module,
 ) -> None:
@@ -323,14 +328,13 @@ def save_checkpoint(
 
     # save_pretrained(): a HF method that saves with metadata that lets you reload the model later using PeftModel.from_pretrained()
     #   you don't need to know the original architecture
-    processor.save_pretrained(ckpt_dir)
     vla.save_pretrained(adapter_dir)
 
     # torch.save(): writes the weights dictionary with no metadata
     #   you need to instantiate the class and call load_state_dict() to fill in the weights
     torch.save(action_projector.state_dict(), ckpt_dir / f"action_projector--{step}_checkpoint.pt")
     torch.save(action_head.state_dict(), ckpt_dir / f"action_head--{step}_checkpoint.pt")
-    logger.info(f"Checkpoint saved → {ckpt_dir}")
+    print(f"Checkpoint saved → {ckpt_dir}")
 
 def validate(
     vla,
@@ -338,37 +342,58 @@ def validate(
     action_head: nn.Module,
     val_set: DataLoader,
     num_patches: int,
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], wandb.Table]:
     vla.eval()
     action_head.eval()
 
     all_metrics: Dict[str, float] = {}
+    table = wandb.Table(columns=["sample", "timestep", "pred_x", "pred_y", "pred_heading", "gt_x", "gt_y", "gt_heading"])
     count = 0
+
     for batch in val_set:
         hidden_action_states = omnivla_forward_pass(vla, batch, num_patches, no_grad=True)
-        _, metrics = action_head_forward_pass(hidden_action_states, action_projector, action_head)
-        # For every batch compute average metric values
+        _, metrics, pred_waypoints, gt_waypoints = action_head_forward_pass(
+            hidden_action_states, action_projector, action_head, batch
+        )
         for k, v in metrics.items():
             if k not in all_metrics:
                 all_metrics[k] = 0.0
             all_metrics[k] += v
+
+        B, T, _ = pred_waypoints.shape
+        for b in range(B):
+            for t in range(T):
+                pred_heading = torch.atan2(pred_waypoints[b, t, 3], pred_waypoints[b, t, 2]).item()
+                gt_x = gt_waypoints[b, t, 0].item() if gt_waypoints is not None else None
+                gt_y = gt_waypoints[b, t, 1].item() if gt_waypoints is not None else None
+                gt_heading = torch.atan2(gt_waypoints[b, t, 3], gt_waypoints[b, t, 2]).item() if gt_waypoints is not None else None
+                table.add_data(
+                    count * B + b,
+                    t,
+                    pred_waypoints[b, t, 0].item(),
+                    pred_waypoints[b, t, 1].item(),
+                    pred_heading,
+                    gt_x,
+                    gt_y,
+                    gt_heading,
+                )
         count += 1
 
     vla.train()
     action_projector.train()
     action_head.train()
 
-    return {k: v / count for k, v in all_metrics.items()}
+    return {k: v / count for k, v in all_metrics.items()}, table
 
 def main() -> None:
     # Ensure directory for outputs exist
     out_dir = Path(_paths.out_dir)
     os.makedirs(out_dir, exist_ok=True)
-    logger.setup(out_dir / "logs", "train.log")
 
-    logger.info(f"Paths:   {_paths}")
-    logger.info(f"Adapter: {_lora_adapter}")
-    logger.info(f"Training parameters: {_train_params}")
+    print(f"Run started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Paths:   {_paths}")
+    print(f"Adapter: {_lora_adapter}")
+    print(f"Training parameters: {_train_params}")
 
     # Load OmniVLA with weights frozen and the LoRA adapter matrices
     vla, processor = load_omnivla_for_finetune()
@@ -409,7 +434,7 @@ def main() -> None:
     while True:
         for batch in train_set:
             hidden_action_states = omnivla_forward_pass(vla, batch, num_patches, no_grad=False)
-            loss, metrics = action_head_forward_pass(hidden_action_states, action_projector, action_head, batch)
+            loss, metrics, _, _ = action_head_forward_pass(hidden_action_states, action_projector, action_head, batch)
 
             # Run back propagation and store it with each weight
             (loss / _train_params.grad_accumulation_steps).backward()
@@ -431,7 +456,7 @@ def main() -> None:
 
             if weight_update_step % _train_params.log_freq == 0:
                 lr = scheduler.get_last_lr()[0]
-                logger.info(
+                print(
                     f"[step {weight_update_step:>6}/{_train_params.max_steps}]  "
                     + "  ".join(f"{k}={v:.4f}" for k, v in metrics_avg.items())
                     + f"  lr={lr:.2e}"
@@ -446,37 +471,38 @@ def main() -> None:
 
             if weight_update_step > 0 and weight_update_step % _train_params.save_freq == 0:
                 save_checkpoint(
-                    weight_update_step, 
-                    vla, 
-                    processor,
+                    weight_update_step,
+                    vla,
                     action_projector,
                     action_head
                 )
 
             if weight_update_step > 0 and weight_update_step % _train_params.eval_freq == 0:
-                val_metrics = validate(
+                val_metrics, val_table = validate(
                     vla,
                     action_projector,
                     action_head,
                     val_set,
                     num_patches
                 )
-                logger.info(
+                print(
                     f"[val   {weight_update_step:>6}/{_train_params.max_steps}]  "
                     + "  ".join(f"{k}={v:.4f}" for k, v in val_metrics.items())
                 )
-                # Store metrics under /val section
-                wandb.log({"val/" + k: v for k, v in val_metrics.items()}, step=weight_update_step)
+                wandb.log(
+                    {"val/" + k: v for k, v in val_metrics.items()}
+                    | {"val/trajectories": val_table},
+                    step=weight_update_step,
+                )
 
             step += 1
 
             # Finish training
             if weight_update_step >= _train_params.max_steps:
-                logger.info(f"Reached max_steps={_train_params.max_steps}, stopping.")
+                print(f"Reached max_steps={_train_params.max_steps}, stopping.")
                 save_checkpoint(
                     weight_update_step,
                     vla,
-                    processor,
                     action_projector,
                     action_head
                 )
