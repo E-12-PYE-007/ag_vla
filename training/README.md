@@ -92,8 +92,6 @@ tail -f slurm-<job-id>.out      # stream stdout logs
 tail -f slurm-<job-id>.err      # stream stderr logs
 ```
 
-Checkpoints are saved to `out/finetune/step-XXXXXXX/` at the frequency set by `save_freq`.
-
 ## Monitoring results
 Training metrics are logged to [Weights & Biases](https://wandb.ai) under the `aion-r6-vla-training` project. Each run is named `name=f"r{_lora_adapter.rank}_a{_lora_adapter.alpha}_dora{int(_lora_adapter.use_dora)}_lr{_train_params.learning_rate}_bs{_train_params.batch_size}"`.
 
