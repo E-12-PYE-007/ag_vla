@@ -16,23 +16,25 @@ ag_vla/
     ├── training/
     │   ├── finetune/
     │   │   ├── finetune.py
-    │   │   ├── setup_spartan.sh                    ← one-time Spartan environment 
-    │   │   └── e-12-pye-007_ag-vla-finetune.slurm  ← SLURM job submission script
+    │   │   ├── setup_spartan.sh                    ← one-time Spartan environment setup
+    │   │   ├── ag-vla-finetune-test.slurm          ← SLURM job: smoke test (20 steps)
+    │   │   ├── ag-vla-finetune-single.slurm        ← SLURM job: single training run
+    │   │   └── ag-vla-finetune-sweep.slurm         ← SLURM job array: hyperparameter sweep
     │   └── README.md
     │
     └── inference/                                  ← inference scripts
 ```
 
-## Spartan project storage layout
+## Storage layout
 
-Files except the datasets live under `/data/gpfs/projects/<project-id>/` on Spartan (not in this repo).
+### Spartan project storage
 
-Datasets are stored on Mediaflux and staged to `/tmp` on the compute node at job start.
+Files except datasets live under `/data/gpfs/projects/<project-id>/` on Spartan (not in this repo).
 
 ```
 /data/gpfs/projects/<project-id>/
     ├── ag_vla/
-    │   └── AsyncVLA/                               ← git submodule clone 
+    │   └── AsyncVLA/                               ← git submodule clone
     │
     ├── out/                                        ← created at training time
     │   └── finetune/
@@ -41,7 +43,7 @@ Datasets are stored on Mediaflux and staged to `/tmp` on the compute node at job
     │           ├── action_projector--10000_checkpoint.pt
     │           └── action_head--10000_checkpoint.pt
     │
-    ├── wandb/                                      ← W&B offline run data, sync 
+    ├── wandb/                                      ← W&B offline run data (sync after job)
     │   └── run-<id>/
     │
     ├── venvs/
@@ -51,3 +53,11 @@ Datasets are stored on Mediaflux and staged to `/tmp` on the compute node at job
     └── .cache/
         └── huggingface/                            ← HF model cache (~15 GB for OmniVLA)
 ```
+
+### Mediaflux
+
+<!-- TODO: fill in Mediaflux namespace and folder structure -->
+
+### Compute node `/tmp`
+
+Datasets are staged from Mediaflux to `/tmp` at job start.
