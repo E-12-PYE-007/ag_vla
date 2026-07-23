@@ -98,12 +98,11 @@ fi
 info "Checking storage quota..."
 lfs quota -h -g "${PROJECT_ID}" /data/gpfs/projects/ 2>/dev/null || info "Could not retrieve quota (non-fatal)"
 
-info "Checking dataset..."
-if [ -d "${DATA_DIR}" ]; then
-    N=$(find "${DATA_DIR}" -type f | wc -l)
-    ok "Dataset directory exists: ${DATA_DIR} (${N} files)"
+info "Checking Mediaflux setup..."
+if [ -f "${HOME}/.Arcitecta/mflux.cfg" ]; then
+    ok "Mediaflux config found: ~/.Arcitecta/mflux.cfg"
 else
-    fail "Dataset directory not found: ${DATA_DIR}"
+    fail "Mediaflux config not found — run unimelb-mf-login first"
 fi
 
 info "Checking output directory..."
@@ -144,9 +143,9 @@ python -c "import torch; print(f'  torch {torch.__version__}, CUDA available: {t
     && ok "torch importable" \
     || fail "torch not importable"
 
-python -c "import transformers, peft, wandb" \
-    && ok "transformers, peft, wandb importable" \
-    || fail "one or more of transformers/peft/wandb not importable"
+python -c "import draccus, transformers, peft, wandb" \
+    && ok "draccus, transformers, peft, wandb importable" \
+    || fail "one or more of draccus/transformers/peft/wandb not importable"
 
 python -c "import prismatic" \
     && ok "prismatic importable (AsyncVLA editable install working)" \
@@ -172,6 +171,6 @@ if [ "${FAIL}" -gt 0 ]; then
     exit 1
 else
     echo "All checks passed — ready to submit."
-    echo "Run: sbatch training/e-12-pye-007_ag-vla-finetune.slurm"
+    echo "Run: sbatch one of training/finetune/ag-vla-finetune-<type>.slurm"
     exit 0
 fi
