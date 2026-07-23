@@ -1,7 +1,8 @@
 import os
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+import draccus
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -73,10 +74,11 @@ class TrainingConfig:
     gamma:                   float = 0.1 # 
     num_workers:             int   = 4 # how many parallel CPU processes load and preprocess data while the GPU is training
 
-# Define global variables
-_paths = PathConfig()
-_lora_adapter = LoraAdapterConfig()
-_train_params = TrainingConfig()
+@dataclass
+class Config:
+    paths: PathConfig        = field(default_factory=PathConfig)
+    lora:  LoraAdapterConfig = field(default_factory=LoraAdapterConfig)
+    train: TrainingConfig    = field(default_factory=TrainingConfig)
 
 
 def load_omnivla_for_finetune():
@@ -118,7 +120,7 @@ def load_omnivla_for_finetune():
     target_modules = [path for path, module in vla.named_modules() if isinstance(module, nn.Linear)]
     lora_config = LoraConfig(
         r=_lora_adapter.rank,
-        lora_alpha=_lora_adapter.rank,
+        lora_alpha=_lora_adapter.alpha,
         lora_dropout=_lora_adapter.dropout,
         target_modules=target_modules,
         init_lora_weights=_lora_adapter.initial_weights,
@@ -385,7 +387,13 @@ def validate(
 
     return {k: v / count for k, v in all_metrics.items()}, table
 
-def main() -> None:
+@draccus.wrap()
+def main(cfg: Config) -> None:
+    global _paths, _lora_adapter, _train_params
+    _paths = cfg.paths
+    _lora_adapter = cfg.lora
+    _train_params = cfg.train
+
     # Ensure directory for outputs exist
     out_dir = Path(_paths.out_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -407,7 +415,7 @@ def main() -> None:
     action_projector = load_support_modules(llm_dim)
 
     #TODO: load action head
-    action_head = Optional()
+    action_head = None
 
     optimiser, scheduler = load_optimiser_scheduler(vla)
 

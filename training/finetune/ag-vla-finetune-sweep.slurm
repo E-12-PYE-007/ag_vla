@@ -109,7 +109,8 @@ python training/finetune/finetune.py \
     --lora.alpha ${ALPHA} \
     --lora.use_dora ${DORA} \
     --train.learning_rate ${LR} \
-    --train.batch_size ${BATCH}
+    --train.batch_size ${BATCH} \
+    --paths.out_dir ${PROJECT_DIR}/out/finetune/r${RANK}_a${ALPHA}_dora${DORA}_lr${LR}
 
 # Move final checkpoints to Mediaflux
 unimelb-mf-upload \
