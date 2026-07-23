@@ -15,7 +15,6 @@ PYTHON_MODULE="GCCcore/11.3.0 Python/3.10.4"
 
 CUDA_MODULE="CUDA/12.1.1"
 
-DATA_DIR="${PROJECT_DIR}/data/fenceline"
 OUT_DIR="${PROJECT_DIR}/out"
 HF_HOME="${PROJECT_DIR}/.cache/huggingface"
 ASYNCVLA_DIR="${PROJECT_DIR}/ag_vla/AsyncVLA"
