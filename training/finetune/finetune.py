@@ -284,6 +284,7 @@ def action_head_forward_pass(
         action_head,
         batch: dict,
 ) -> Tuple[torch.Tensor, Dict[str, float], torch.Tensor, Optional[torch.Tensor]]:
+    #TODO: Also pass images
 
     #TODO: extract ground truths
     gt_waypoint_norm = None
@@ -423,12 +424,12 @@ def main(cfg: Config) -> None:
     
     wandb_run = setup_wandb()
 
-    # num_patches = patches per image × num_images
-    #   patch = grid of 16 x 16 pixels
+    # num_patches = patches per image × num_images + proprio token
+    #   patch = grid of 14 x 14 pixels + 1 
     num_patches = (
         vla.base_model.model.vision_backbone.get_num_patches()
-        * vla.base_model.vision_backbone.get_num_images_in_input()
-    )
+        * vla.base_model.model.vision_backbone.get_num_images_in_input()
+    ) + 1
 
     # Training main loop
     step = 0
