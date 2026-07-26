@@ -55,8 +55,8 @@ class PathConfig:
 # Initial values are from AsyncVLA
 @dataclass
 class LoraAdapterConfig:
-    rank:            int   = 128 # rank of adapter matrices
-    alpha:           int   = 16 # scaling during update
+    rank:            int   = 32 # rank of adapter matrices
+    alpha:           int   = 1*rank # scaling during update
     dropout:         float = 0.0
     initial_weights: str   = "gaussian" # initial value of A matrix 
     use_dora:        bool  = False
@@ -64,15 +64,15 @@ class LoraAdapterConfig:
 @dataclass
 class TrainingConfig:
     batch_size:              int   = 4 # how many training samples are processed together in one forward pass
-    learning_rate:           float = 1e-4 # 
+    learning_rate:           float = 1e-4  
     max_steps:               int   = 50_000 # total number of gradient update steps before training stops
     grad_accumulation_steps: int   = 1 # how many forward passes to accumulate before doing one weight update
     save_freq:               int   = 5_000 # how often the checkpoints get saved
     log_freq:                int   = 100 # frequency to log loss
     eval_freq:               int   = 500  # frequency of validation loop
     num_steps_before_decay:  int   = 30_000 # the step at which the scheduler drops the learning rate by gamma
-    gamma:                   float = 0.1 # 
-    num_workers:             int   = 4 # how many parallel CPU processes load and preprocess data while the GPU is training
+    gamma:                   float = 0.1 # the multiplier for learning rate decay
+    num_workers:             int   = 7 # how many parallel CPU processes load and preprocess data while the GPU is training
 
 @dataclass
 class Config:
