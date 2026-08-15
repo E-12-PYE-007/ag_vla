@@ -381,13 +381,26 @@ def run_forward_pass(
     origin[:, :, 3] = torch.sin(torch.tensor(0.0))
     smooth_ref = torch.cat([origin, predicted_actions[:, :-1]], dim=1)
 
-    # All samples are language-conditioned (goal_mask always 7)
+    action_ref  = ground_truth_actions
+    daction_ref = pose_to_delta(action_ref)
+
+    # Imitation loss: action reconstruction in pose space + delta space (all samples)
+    mse_action = nn.MSELoss()(action_ref, predicted_actions)
+    mse_delta  = nn.MSELoss()(daction_ref, predicted_dactions)
+    # Language-specific: goal position at final timestep
     mse_obj    = nn.MSELoss()(pose_goal, predicted_actions[:, -1, :2])
+    # J_sm: trajectory smoothness regularisation
     mse_smooth = nn.MSELoss()(smooth_ref, predicted_actions)
-    loss = 0.1 * mse_obj + 0.1 * mse_smooth
+
+    loss = (0.5 * mse_action
+            + 0.5 * 15.0 * mse_delta
+            + 0.1 * mse_obj
+            + 0.1 * mse_smooth)
 
     metrics = {
         "loss":       loss.item(),
+        "mse_action": mse_action.item(),
+        "mse_delta":  mse_delta.item(),
         "mse_obj":    mse_obj.item(),
         "mse_smooth": mse_smooth.item(),
     }

@@ -31,12 +31,13 @@ else:
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 for i in range(NUM_BATCHES):
-    # Action token IDs used in both input_ids and labels (same per position)
-    action_token_ids = torch.randint(1, 30000, (BATCH_SIZE, N_ACTION))
+    # Action token IDs must be > ACTION_TOKEN_BEGIN_IDX (31743) — both
+    # get_current_action_mask and get_next_actions_mask check token_id > 31743.
+    action_token_ids = torch.randint(31744, 32000, (BATCH_SIZE, N_ACTION))
 
-    # input_ids: language tokens followed by action tokens (consistent structure)
+    # Language token IDs kept below 31744 so they are never mistaken for action tokens
     input_ids = torch.cat([
-        torch.randint(1, 30000, (BATCH_SIZE, N_LANG)),
+        torch.randint(1, 31744, (BATCH_SIZE, N_LANG)),
         action_token_ids,
     ], dim=1)  # (B, SEQ_LEN)
 
