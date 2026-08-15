@@ -55,7 +55,7 @@ pip install \
 ok "PyTorch 2.2.0 (cu121) installed"
 
 info "Installing AsyncVLA base requirements..."
-pip install -r "${ASYNCVLA_DIR}/requirements.txt" --quiet
+grep -v "OmniVLA" "${ASYNCVLA_DIR}/requirements.txt" | pip install -r /dev/stdin --quiet
 ok "AsyncVLA requirements installed"
 
 # Install editable packages
