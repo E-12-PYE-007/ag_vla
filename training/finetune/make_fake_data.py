@@ -16,6 +16,12 @@ BATCH_SIZE  = 4
 SEQ_LEN     = 50   # prompt + action tokens
 NUM_BATCHES = 30
 
+# Action chunk dimensions (must match AsyncVLA constants)
+NUM_ACTIONS_CHUNK = 8
+ACTION_DIM        = 4
+N_ACTION          = NUM_ACTIONS_CHUNK * ACTION_DIM  # 32 action tokens per sample
+N_LANG            = SEQ_LEN - N_ACTION              # 18 language tokens per sample
+
 project_id = os.environ.get("PROJECT_ID", "")
 if project_id:
     DATA_DIR = Path(f"/data/gpfs/projects/{project_id}/fake_data")
@@ -25,22 +31,36 @@ else:
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 for i in range(NUM_BATCHES):
-    # Alternate modality: 7 = language-only, 6 = image-only
-    # lan_bool in run_forward_pass is True for 7 and 8
-    goal_mask = torch.tensor([7, 6, 7, 6])
+    # Action token IDs used in both input_ids and labels (same per position)
+    action_token_ids = torch.randint(1, 30000, (BATCH_SIZE, N_ACTION))
+
+    # input_ids: language tokens followed by action tokens (consistent structure)
+    input_ids = torch.cat([
+        torch.randint(1, 30000, (BATCH_SIZE, N_LANG)),
+        action_token_ids,
+    ], dim=1)  # (B, SEQ_LEN)
+
+    # labels: IGNORE_INDEX (-100) for language positions, real token IDs for action positions.
+    # This ensures _process_action_masks() finds exactly N_ACTION tokens per sample,
+    # keeping the per-sample count uniform so the model's reshape([B, -1, D]) succeeds.
+    labels = torch.full((BATCH_SIZE, SEQ_LEN), -100, dtype=torch.long)
+    labels[:, N_LANG:] = action_token_ids
+
+    # attention_mask_label: True only at action token positions
+    attention_mask_label = torch.zeros(BATCH_SIZE, SEQ_LEN, dtype=torch.bool)
+    attention_mask_label[:, N_LANG:] = True
 
     batch = {
-        "input_ids":            torch.randint(0, 32000, (BATCH_SIZE, SEQ_LEN)),
+        "input_ids":            input_ids,
         "attention_mask":       torch.ones(BATCH_SIZE, SEQ_LEN, dtype=torch.bool),
-        "attention_mask_label": torch.ones(BATCH_SIZE, SEQ_LEN, dtype=torch.bool),
-        "labels":               torch.randint(0, 32000, (BATCH_SIZE, SEQ_LEN)),
+        "attention_mask_label": attention_mask_label,
+        "labels":               labels,
         "pixel_values":         torch.randn(BATCH_SIZE, 6, 224, 224),  # 2 images × 3 channels
-        "goal_pose":            torch.randn(BATCH_SIZE, 4),             # (x, y, cosθ, sinθ)
         "obj_pose_norm":        torch.randn(BATCH_SIZE, 2),             # normalised goal (x, y)
         "actions":              torch.randn(BATCH_SIZE, 8, 4),          # (len_traj_pred=8, 4)
         "c_image":              torch.rand(BATCH_SIZE, 3, 96, 96),      # [0,1] before _IMG_NORM
         "p_image":              torch.rand(BATCH_SIZE, 3, 96, 96),
-        "goal_mask_select":     goal_mask,
+        "goal_mask_select":     torch.full((BATCH_SIZE,), 7),           # all language-conditioned
     }
 
     path = DATA_DIR / f"batch_{i:03d}.pt"
