@@ -56,7 +56,7 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 
 # Define paths to internal storage
-PROJECT_ID=<your-project-id>
+PROJECT_ID=capstone
 PROJECT_DIR=/data/gpfs/projects/${PROJECT_ID}
 
 # Define path to Mediaflux storage (for testing)

@@ -36,8 +36,9 @@ from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK
 # Disable HF's tokenizer library, which uses multiple threads to process text faster
 # We want to use parallelism for loading image data instead in DataLoader
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-ASYNCVLA_MODEL_ID = "NHirose/AsyncVLA_release"
-OMNIVLA_STEP = 750_000
+
+OMNIVLA_MODEL_ID = "NHirose/omnivla-original-balance"
+OMNIVLA_STEP = 285_000
 MODALITY_ID = 7
 DEVICE = "cuda"
 
@@ -63,7 +64,7 @@ class LoraAdapterConfig:
 @dataclass
 class TrainingConfig:
     batch_size:              int   = 4 # how many training samples are processed together in one forward pass
-    learning_rate:           float = 5e-4  
+    learning_rate:           float = 1e-4  
     max_steps:               int   = 50_000 # total number of gradient update steps before training stops
     grad_accumulation_steps: int   = 1 # how many forward passes to accumulate before doing one weight update
     save_freq:               int   = 5_000 # how often the checkpoints get saved
@@ -80,8 +81,8 @@ class Config:
     train: TrainingConfig    = field(default_factory=TrainingConfig)
 
 
-def load_asyncvla_for_finetune():
-    # 1. Register and load AsyncVLA
+def load_omnivla_for_finetune():
+    # 1. Register and load OmniVLA
 
     # Register custom HF auto-classes
     #   AutoConfig, AutoImageProcessor etc. are the parent classes to construct a model
@@ -95,22 +96,21 @@ def load_asyncvla_for_finetune():
     # Register the processor which combines the image and the tokenizer into one object
     #   This simply combines, so the image processor still needs to be defined
     AutoProcessor.register(OpenVLAConfig, PrismaticProcessor)
-    # Register OmniVLA 
+    # Register OmniVLA
     #   "Vision2Seq" simply means it's a model that takes images + text as input and ouputs a sequence of tokens
     AutoModelForVision2Seq.register(OpenVLAConfig, OpenVLAForActionPrediction_MMNv1)
 
     # Load OmniVLA processor from HF Hub
-    processor = AutoProcessor.from_pretrained(ASYNCVLA_MODEL_ID, trust_remote_code=True)
+    processor = AutoProcessor.from_pretrained(OMNIVLA_MODEL_ID, trust_remote_code=True)
 
-    # Load AsyncVLA base model weights from HB Hub
+    # Load OmniVLA model weights from HB Hub
     vla = AutoModelForVision2Seq.from_pretrained(
-        ASYNCVLA_MODEL_ID,
+        OMNIVLA_MODEL_ID,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
     ).to(DEVICE)
 
-
-    # 2. Prepare AsyncVLA for LoRA finetuning
+    # 2. Prepare OmniVLA for LoRA finetuning
     
     # Ensure LoRA is only applied to layers that contains weights
     #   nn.Linear: performs y = x @ W + b
@@ -136,13 +136,14 @@ def load_support_modules(llm_dim: int) -> nn.Module:
     #TODO: action_dim depends on action_head architecture
     # Load AsyncVLA's action_projector with empty weights
     #   Compresses LLM hidden states
-    action_projector = _load_module(
-        Proj_Actiontokens,
-        None,
-        input_dim=llm_dim,
-        hidden_dim=llm_dim,
-        action_dim=
-    ).to(torch.bfloat16).to(DEVICE)
+    action_projector = nn.Module()
+    # action_projector = _load_module(
+    #     Proj_Actiontokens,
+    #     None,
+    #     input_dim=llm_dim,
+    #     hidden_dim=llm_dim,
+    #     action_dim=
+    # ).to(torch.bfloat16).to(DEVICE)
 
     return action_projector
 

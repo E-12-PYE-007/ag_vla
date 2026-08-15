@@ -7,7 +7,7 @@ set -euo pipefail
 # o pipefail: if any command in a pipeline (passing the output of one as input to the next by |) fails, the whole pipeline fails
 
 # Set environment variables
-PROJECT_ID=
+PROJECT_ID=capstone
 PROJECT_DIR="/data/gpfs/projects/${PROJECT_ID}"
 VENV_DIR="${PROJECT_DIR}/venvs/training/finetune"
 
