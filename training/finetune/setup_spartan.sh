@@ -8,7 +8,7 @@ set -euo pipefail
 
 # Set environment variables
 PROJECT_ID=capstone
-PROJECT_DIR="/data/gpfs/projects/${PROJECT_ID}"
+PROJECT_DIR="/capstone/E12PYE007"
 VENV_DIR="${PROJECT_DIR}/venvs/training/finetune"
 
 PYTHON_MODULE="GCCcore/11.3.0 Python/3.10.4"

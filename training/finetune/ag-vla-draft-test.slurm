@@ -4,7 +4,7 @@
 #SBATCH --job-name=ag-vla-draft-test
 
 # GPU selection
-#SBATCH -p gpu-a100
+#SBATCH -p gpu-a100-short
 
 # Number of GPUs
 #SBATCH --gres=gpu:1
@@ -37,9 +37,10 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 
 PROJECT_ID=capstone
-PROJECT_DIR=/data/gpfs/projects/${PROJECT_ID}
+PROJECT_DIR=/capstone/E12PYE007
 
 export PROJECT_ID
+export PROJECT_DIR
 export HF_HOME=${PROJECT_DIR}/.cache/huggingface
 export TOKENIZERS_PARALLELISM=false
 export WANDB_MODE=offline

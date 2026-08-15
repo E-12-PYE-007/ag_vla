@@ -397,8 +397,8 @@ def main(cfg: Config) -> None:
     scheduler = MultiStepLR(optimiser, milestones=[_train_params.num_steps_before_decay], gamma=_train_params.gamma)
 
     data_dir = _paths.data_dir or (
-        f"/data/gpfs/projects/{os.environ['PROJECT_ID']}/fake_data"
-        if os.environ.get("PROJECT_ID") else
+        f"{os.environ['PROJECT_DIR']}/fake_data"
+        if os.environ.get("PROJECT_DIR") else
         str(Path(__file__).parent / "fake_data")
     )
     train_loader, val_loader = load_dataset(data_dir)
