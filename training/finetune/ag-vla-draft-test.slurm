@@ -61,3 +61,5 @@ python training/finetune/draft.py \
     --train.save_freq 10 \
     --train.eval_freq 5 \
     --train.log_freq 1
+
+my-job-stats -v -d
