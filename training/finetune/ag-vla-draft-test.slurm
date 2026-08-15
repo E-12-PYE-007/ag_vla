@@ -37,7 +37,7 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 
 PROJECT_ID=capstone
-PROJECT_DIR=/capstone/E12PYE007
+PROJECT_DIR=/data/gpfs/projects/capstone/E12PYE007
 
 export PROJECT_ID
 export PROJECT_DIR
