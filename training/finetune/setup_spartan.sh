@@ -33,7 +33,7 @@ module purge
 module load ${PYTHON_MODULE}
 
 info "Checking virtualenv..."
-if [ -d "${VENV_DIR}" ]; then
+if [ -f "${VENV_DIR}/bin/activate" ]; then
     ok "Virtualenv exists: ${VENV_DIR}"
 else
     info "Virtualenv not found — creating it now..."
