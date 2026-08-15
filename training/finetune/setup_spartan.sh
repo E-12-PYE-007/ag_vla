@@ -67,6 +67,13 @@ info "Installing visualnav-transformer as editable package..."
 pip install -e "${VISUALNAV_DIR}" --quiet
 ok "visualnav-transformer installed as editable: ${VISUALNAV_DIR}"
 
+# Patch prismatic __init__ files to suppress eager imports of the TF/RLDS data pipeline.
+# draft.py imports specific submodules directly and does not use these entrypoints.
+info "Patching prismatic __init__ files..."
+sed -i 's/^from .models import/# from .models import/' "${ASYNCVLA_DIR}/prismatic/__init__.py"
+sed -i 's/^from .materialize import/# from .materialize import/' "${ASYNCVLA_DIR}/prismatic/vla/__init__.py"
+ok "prismatic __init__ files patched"
+
 # Install Flash Attention
 info "Loading CUDA toolkit for FlashAttention compilation..."
 module load ${CUDA_MODULE}
