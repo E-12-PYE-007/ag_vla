@@ -229,7 +229,7 @@ def run_forward_pass(
     img_past = _IMG_NORM(batch["p_image"]).to(DEVICE).to(torch.bfloat16)
 
     ground_truth_actions = batch["actions"].to(DEVICE).to(torch.bfloat16)
-    pose_goal            = batch["obj_pose_norm"].to(DEVICE).to(torch.bfloat16)
+    pose_goal = batch["obj_pose_norm"].to(DEVICE).to(torch.bfloat16)
 
     vla_context = torch.no_grad() if no_grad else torch.enable_grad()
     with vla_context, torch.autocast(DEVICE, dtype=torch.bfloat16):
@@ -273,19 +273,31 @@ def run_forward_pass(
     origin[:, :, 3] = torch.sin(torch.tensor(0.0))
     smooth_ref = torch.cat([origin, predicted_actions[:, :-1]], dim=1)
 
-    loss = (
-        0.5      * nn.MSELoss()(action_ref[~lan_bool], predicted_actions[~lan_bool])
-        + 0.5 * 15.0 * nn.MSELoss()(daction_ref[~lan_bool], predicted_dactions[~lan_bool])
-        + 0.1    * nn.MSELoss()(pose_goal[lan_bool], predicted_actions[:, -1, :2][lan_bool])
-        + 0.1    * nn.MSELoss()(smooth_ref, predicted_actions)
-    )
+    non_lan = ~lan_bool
+    loss = torch.zeros(1, device=DEVICE, dtype=torch.bfloat16)
+    mse_action = mse_delta = mse_obj = 0.0
+
+    if non_lan.any():
+        mse_action = nn.MSELoss()(action_ref[non_lan], predicted_actions[non_lan])
+        mse_delta  = nn.MSELoss()(daction_ref[non_lan], predicted_dactions[non_lan])
+        loss = loss + 0.5 * mse_action + 0.5 * 15.0 * mse_delta
+        mse_action, mse_delta = mse_action.item(), mse_delta.item()
+
+    if lan_bool.any():
+        mse_obj = nn.MSELoss()(pose_goal[lan_bool], predicted_actions[:, -1, :2][lan_bool])
+        loss    = loss + 0.1 * mse_obj
+        mse_obj = mse_obj.item()
+
+    mse_smooth = nn.MSELoss()(smooth_ref, predicted_actions)
+    loss       = loss + 0.1 * mse_smooth
+    loss       = loss.squeeze()
 
     metrics = {
         "loss":       loss.item(),
-        "mse_action": nn.MSELoss()(action_ref[~lan_bool], predicted_actions[~lan_bool]).item(),
-        "mse_delta":  nn.MSELoss()(daction_ref[~lan_bool], predicted_dactions[~lan_bool]).item(),
-        "mse_obj":    nn.MSELoss()(pose_goal[lan_bool], predicted_actions[:, -1, :2][lan_bool]).item(),
-        "mse_smooth": nn.MSELoss()(smooth_ref, predicted_actions).item(),
+        "mse_action": mse_action,
+        "mse_delta":  mse_delta,
+        "mse_obj":    mse_obj,
+        "mse_smooth": mse_smooth.item(),
     }
     return loss, metrics
 
