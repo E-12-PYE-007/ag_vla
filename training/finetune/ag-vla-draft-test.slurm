@@ -27,6 +27,10 @@
 # stderr output
 #SBATCH -e slurm-%j.err
 
+#SBATCH --mail-user=lyamamoto@student.unimelb.edu.au
+
+#SBATCH --mail-type=ALL
+
 
 module purge
 module load GCCcore/11.3.0 Python/3.10.4
