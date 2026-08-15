@@ -30,7 +30,9 @@
 # stderr output
 #SBATCH -e slurm-%j.err
 
+#SBATCH --mail-user=lyamamoto@student.unimelb.edu.au
 
+#SBATCH --mail-type=ALL
 
 #TODO: confirm module names
 # Clear any modules that were loaded by default
