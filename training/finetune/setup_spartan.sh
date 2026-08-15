@@ -37,7 +37,7 @@ if [ -d "${VENV_DIR}" ]; then
     ok "Virtualenv exists: ${VENV_DIR}"
 else
     info "Virtualenv not found — creating it now..."
-    virtualenv "${VENV_DIR}"
+    python -m venv "${VENV_DIR}"
     ok "Created virtualenv: ${VENV_DIR}"
 fi
 
