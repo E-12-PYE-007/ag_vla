@@ -58,6 +58,7 @@ for i in range(NUM_BATCHES):
         "labels":               labels,
         "pixel_values":         torch.randn(BATCH_SIZE, 6, 224, 224),  # 2 images × 3 channels
         "obj_pose_norm":        torch.randn(BATCH_SIZE, 2),             # normalised goal (x, y)
+        "goal_pose":            torch.zeros(BATCH_SIZE, 4),             # dummy — masked for modality 7, values irrelevant
         "actions":              torch.randn(BATCH_SIZE, 8, 4),          # (len_traj_pred=8, 4)
         "c_image":              torch.rand(BATCH_SIZE, 3, 96, 96),      # [0,1] before _IMG_NORM
         "p_image":              torch.rand(BATCH_SIZE, 3, 96, 96),

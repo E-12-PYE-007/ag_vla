@@ -27,9 +27,10 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction_MMNv1
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
+from prismatic.models.projectors import ProprioProjector
 from prismatic.models.small_head import Edge_adapter, Proj_Actiontokens
 from prismatic.training.train_utils import get_current_action_mask, get_next_actions_mask
-from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK
+from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK, POSE_DIM
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -185,7 +186,11 @@ def load_support_modules(vla) -> Tuple:
         action_dim=1024,
     )
 
-    return shead, action_proj
+    # pose_projector: fresh init (no checkpoint) — output is masked for modality 7 so weights don't matter
+    pose_projector = ProprioProjector(llm_dim=llm_dim, proprio_dim=POSE_DIM)
+    pose_projector = pose_projector.to(torch.bfloat16).to(DEVICE)
+
+    return shead, action_proj, pose_projector
 
 
 class BatchDataset(torch.utils.data.Dataset):
@@ -218,6 +223,7 @@ def run_forward_pass(
     vla,
     action_proj,
     shead,
+    pose_projector,
     batch: dict,
     num_patches: int,
     no_grad: bool = False,
@@ -242,6 +248,8 @@ def run_forward_pass(
             labels=batch["labels"].to(DEVICE),
             output_hidden_states=True,
             use_film=False,
+            proprio=batch["goal_pose"].to(torch.bfloat16).to(DEVICE),
+            proprio_projector=pose_projector,
         )
 
     gt_ids = batch["labels"][:, 1:].to(DEVICE)
@@ -289,8 +297,8 @@ def run_forward_pass(
 
     metrics = {
         "loss":       loss.item(),
-        "mse_action": mse_action,
-        "mse_delta":  mse_delta,
+        "mse_action": mse_action.item(),
+        "mse_delta":  mse_delta.item(),
         "mse_obj":    mse_obj,
         "mse_smooth": mse_smooth.item(),
     }
@@ -311,6 +319,7 @@ def validate(
     vla,
     action_proj,
     shead,
+    pose_projector,
     val_loader: DataLoader,
     num_patches: int,
 ) -> Dict[str, float]:
@@ -321,7 +330,7 @@ def validate(
 
     for batch in val_loader:
         _, metrics = run_forward_pass(
-            vla, action_proj, shead, batch, num_patches, no_grad=True,
+            vla, action_proj, shead, pose_projector, batch, num_patches, no_grad=True,
         )
         for k, v in metrics.items():
             all_metrics[k] = all_metrics.get(k, 0.0) + v
@@ -378,11 +387,13 @@ def main(cfg: Config) -> None:
     vla, _ = load_asyncvla_for_finetune()
     vla.train()
 
-    shead, action_proj = load_support_modules(vla)
+    shead, action_proj, pose_projector = load_support_modules(vla)
     shead.eval()
     action_proj.eval()
+    pose_projector.eval()
     shead.requires_grad_(False)
     action_proj.requires_grad_(False)
+    pose_projector.requires_grad_(False)
 
     trainable = [p for p in vla.parameters() if p.requires_grad]
     print(f"Total trainable params: {sum(p.numel() for p in trainable):,}")
@@ -400,7 +411,7 @@ def main(cfg: Config) -> None:
     num_patches = (
         vla.base_model.model.vision_backbone.get_num_patches()
         * vla.base_model.model.vision_backbone.get_num_images_in_input()
-    )
+    ) + 1  # +1 for goal-pose proprio token
 
     wandb_run = setup_wandb()
 
@@ -412,7 +423,7 @@ def main(cfg: Config) -> None:
     while True:
         for batch in train_loader:
             loss, metrics = run_forward_pass(
-                vla, action_proj, shead, batch, num_patches, no_grad=False,
+                vla, action_proj, shead, pose_projector, batch, num_patches, no_grad=False,
             )
             (loss / _train_params.grad_accumulation_steps).backward()
 
@@ -444,7 +455,7 @@ def main(cfg: Config) -> None:
                 save_checkpoint(weight_update_step, vla)
 
             if val_loader is not None and weight_update_step > 0 and weight_update_step % _train_params.eval_freq == 0:
-                val_metrics = validate(vla, action_proj, shead, val_loader, num_patches)
+                val_metrics = validate(vla, action_proj, shead, pose_projector, val_loader, num_patches)
                 print(
                     f"[val   {weight_update_step:>6}/{_train_params.max_steps}]  "
                     + "  ".join(f"{k}={v:.4f}" for k, v in val_metrics.items())

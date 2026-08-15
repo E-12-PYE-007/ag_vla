@@ -31,10 +31,11 @@ from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction_MMNv1
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder
+from prismatic.models.projectors import ProprioProjector
 from prismatic.models.small_head import Edge_adapter, Proj_Actiontokens
 from prismatic.training.train_utils import get_current_action_mask, get_next_actions_mask
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.constants import ACTION_DIM, IGNORE_INDEX, NUM_ACTIONS_CHUNK
+from prismatic.vla.constants import ACTION_DIM, IGNORE_INDEX, NUM_ACTIONS_CHUNK, POSE_DIM
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -204,7 +205,11 @@ def load_support_modules(vla_base, device: str) -> Tuple:
         action_dim=1024,
     )
 
-    return shead, action_proj
+    # pose_projector: fresh init (no checkpoint) — output is masked for modality 7 so weights don't matter
+    pose_projector = ProprioProjector(llm_dim=llm_dim, proprio_dim=POSE_DIM)
+    pose_projector = pose_projector.to(torch.bfloat16).to(device)
+
+    return shead, action_proj, pose_projector
 
 
 class SampleDataset(Dataset):
@@ -286,6 +291,7 @@ def make_collate_fn(processor):
             "labels":               labels,
             "pixel_values":         torch.stack([s["pixel_values"] for s in samples]),
             "obj_pose_norm":        torch.stack([s["obj_pose_norm"] for s in samples]),
+            "goal_pose":            torch.zeros(len(samples), POSE_DIM),  # dummy — masked for modality 7
             "actions":              torch.stack([s["actions"] for s in samples]),
             "c_image":              torch.stack([s["c_image"] for s in samples]),
             "p_image":              torch.stack([s["p_image"] for s in samples]),
@@ -331,6 +337,7 @@ def run_forward_pass(
     vla,
     action_proj,
     shead,
+    pose_projector,
     batch: dict,
     num_patches: int,
     device: str,
@@ -356,6 +363,8 @@ def run_forward_pass(
             labels=batch["labels"].to(device),
             output_hidden_states=True,
             use_film=False,
+            proprio=batch["goal_pose"].to(torch.bfloat16).to(device),
+            proprio_projector=pose_projector,
         )
 
     gt_ids    = batch["labels"][:, 1:].to(device)
@@ -416,14 +425,14 @@ def save_checkpoint(step: int, vla) -> None:
     print(f"Checkpoint saved → {ckpt_dir}")
 
 
-def validate(vla, action_proj, shead, val_loader: DataLoader, num_patches: int, device: str) -> Dict[str, float]:
+def validate(vla, action_proj, shead, pose_projector, val_loader: DataLoader, num_patches: int, device: str) -> Dict[str, float]:
     vla.eval()
 
     totals: Dict[str, float] = {}
     count = 0
 
     for batch in val_loader:
-        _, metrics = run_forward_pass(vla, action_proj, shead, batch, num_patches, device, no_grad=True)
+        _, metrics = run_forward_pass(vla, action_proj, shead, pose_projector, batch, num_patches, device, no_grad=True)
         for k, v in metrics.items():
             totals[k] = totals.get(k, 0.0) + v
         count += 1
@@ -496,11 +505,13 @@ def main(cfg: Config) -> None:
     vla = DDP(vla, device_ids=[local_rank], find_unused_parameters=True)
     vla.train()
 
-    shead, action_proj = load_support_modules(vla.module, device)
+    shead, action_proj, pose_projector = load_support_modules(vla.module, device)
     shead.eval()
     action_proj.eval()
+    pose_projector.eval()
     shead.requires_grad_(False)
     action_proj.requires_grad_(False)
+    pose_projector.requires_grad_(False)
 
     if _rank == 0:
         trainable = [p for p in vla.parameters() if p.requires_grad]
@@ -521,7 +532,7 @@ def main(cfg: Config) -> None:
     num_patches = (
         vla.module.base_model.model.vision_backbone.get_num_patches()
         * vla.module.base_model.model.vision_backbone.get_num_images_in_input()
-    )
+    ) + 1  # +1 for goal-pose proprio token
 
     wandb_run = setup_wandb(world_size)
 
@@ -539,7 +550,7 @@ def main(cfg: Config) -> None:
 
             with ctx:
                 loss, metrics = run_forward_pass(
-                    vla, action_proj, shead, batch, num_patches, device, no_grad=False,
+                    vla, action_proj, shead, pose_projector, batch, num_patches, device, no_grad=False,
                 )
                 (loss / _train_params.grad_accumulation_steps).backward()
 
@@ -571,7 +582,7 @@ def main(cfg: Config) -> None:
                 save_checkpoint(weight_update_step, vla)
 
             if weight_update_step > 0 and weight_update_step % _train_params.eval_freq == 0:
-                val_metrics = validate(vla, action_proj, shead, val_loader, num_patches, device)
+                val_metrics = validate(vla, action_proj, shead, pose_projector, val_loader, num_patches, device)
                 if _rank == 0:
                     print(
                         f"[val   {weight_update_step:>6}/{_train_params.max_steps}]  "
