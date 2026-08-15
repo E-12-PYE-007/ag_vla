@@ -393,7 +393,7 @@ def main(cfg: Config) -> None:
     scheduler = MultiStepLR(optimiser, milestones=[_train_params.num_steps_before_decay], gamma=_train_params.gamma)
 
     data_dir = _paths.data_dir or (
-        f"{os.environ['PROJECT_DIR']}/fake_data"
+        f"{os.environ['PROJECT_DIR']}/ag_vla/training/finetune/fake_datafake_data"
         if os.environ.get("PROJECT_DIR") else
         str(Path(__file__).parent / "fake_data")
     )
