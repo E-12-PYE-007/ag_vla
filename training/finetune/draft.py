@@ -14,6 +14,7 @@ from torchvision import transforms
 
 import draccus
 import wandb
+from huggingface_hub import snapshot_download
 from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoConfig,
@@ -53,7 +54,7 @@ _IMG_NORM = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 
 @dataclass
 class PathConfig:
     out_dir:      str = "./out/finetune"
-    asyncvla_dir: str = "./AsyncVLA_release"  # contains shead--, action_proj--, pose_projector-- .pt files
+    asyncvla_dir: str = ""  # defaults to HF snapshot of ASYNCVLA_MODEL_ID; set to override
     data_dir:     str = ""                    # defaults to $PROJECT_DIR/fake_data or ./fake_data if unset
 
 @dataclass
@@ -376,6 +377,10 @@ def main(cfg: Config) -> None:
     _paths        = cfg.paths
     _lora_adapter = cfg.lora
     _train_params = cfg.train
+
+    if not _paths.asyncvla_dir:
+        _paths.asyncvla_dir = snapshot_download(ASYNCVLA_MODEL_ID)
+        print(f"AsyncVLA snapshot: {_paths.asyncvla_dir}")
 
     os.makedirs(_paths.out_dir, exist_ok=True)
     print(f"Run started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")

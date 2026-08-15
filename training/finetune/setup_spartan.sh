@@ -84,6 +84,11 @@ pip install flash-attn==2.5.5 --no-build-isolation --quiet \
     && ok "FlashAttention 2.5.5 installed" \
     || { fail "FlashAttention build failed"; }
 
+info "Downloading AsyncVLA_release snapshot from HuggingFace (~16 GB)..."
+export HF_HOME="${PROJECT_DIR}/.cache/huggingface"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('NHirose/AsyncVLA_release')" \
+    && ok "AsyncVLA_release snapshot downloaded to ${HF_HOME}" \
+    || { fail "AsyncVLA_release snapshot download failed"; }
 
 
 # Check all required paths exist
