@@ -42,7 +42,7 @@ module purge
 module load GCCcore/11.3.0 Python/3.10.4
 
 # Loads the CUDA toolkit - the NVIDIA compiler and libraries that GPU code runs on
-module load CUDA/12.1.1
+module load CUDA/12.2.0
 
 # Load Mediaflux client
 module load unimelb-mf-clients

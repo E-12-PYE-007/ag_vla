@@ -30,7 +30,7 @@
 
 module purge
 module load GCCcore/11.3.0 Python/3.10.4
-module load CUDA/12.1.1
+module load CUDA/12.2.0
 
 export CUDA_HOME=$(dirname "$(dirname "$(which nvcc)")")
 export PATH="${CUDA_HOME}/bin:${PATH}"

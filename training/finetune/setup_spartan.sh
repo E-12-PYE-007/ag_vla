@@ -13,7 +13,7 @@ VENV_DIR="${PROJECT_DIR}/venvs/training/finetune"
 
 PYTHON_MODULE="GCCcore/11.3.0 Python/3.10.4"
 
-CUDA_MODULE="CUDA/12.1.1"
+CUDA_MODULE="CUDA/12.2.0"
 
 OUT_DIR="${PROJECT_DIR}/out"
 HF_HOME="${PROJECT_DIR}/.cache/huggingface"
