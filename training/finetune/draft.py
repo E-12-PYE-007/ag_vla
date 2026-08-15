@@ -256,10 +256,8 @@ def run_forward_pass(
         .to(torch.bfloat16)
     )
 
-    # action_proj and shead are frozen — run without gradient
-    with torch.no_grad():
-        projected_actions = action_proj.predict_action(action_hidden.detach(), modality_id)
-        predicted_dactions = shead(img_cur, img_past, projected_actions)
+    projected_actions  = action_proj.predict_action(action_hidden, modality_id)
+    predicted_dactions = shead(img_cur, img_past, projected_actions)
 
     predicted_actions = delta_to_pose(predicted_dactions)
     action_ref  = ground_truth_actions
@@ -383,6 +381,8 @@ def main(cfg: Config) -> None:
     shead, action_proj = load_support_modules(vla)
     shead.eval()
     action_proj.eval()
+    shead.requires_grad_(False)
+    action_proj.requires_grad_(False)
 
     trainable = [p for p in vla.parameters() if p.requires_grad]
     print(f"Total trainable params: {sum(p.numel() for p in trainable):,}")
@@ -400,7 +400,7 @@ def main(cfg: Config) -> None:
     num_patches = (
         vla.base_model.model.vision_backbone.get_num_patches()
         * vla.base_model.model.vision_backbone.get_num_images_in_input()
-    ) + 1
+    )
 
     wandb_run = setup_wandb()
 

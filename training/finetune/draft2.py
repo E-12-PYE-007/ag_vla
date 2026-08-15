@@ -346,7 +346,7 @@ def run_forward_pass(
     pose_goal = batch["obj_pose_norm"].to(device).to(torch.bfloat16)
 
     vla_context = torch.no_grad() if no_grad else torch.enable_grad()
-    with vla_context, torch.autocast(device, dtype=torch.bfloat16):
+    with vla_context, torch.autocast("cuda", dtype=torch.bfloat16):
         output: CausalLMOutputWithPast = vla(
             input_ids=batch["input_ids"].to(device),
             attention_mask=batch["attention_mask"].to(device),
@@ -370,9 +370,8 @@ def run_forward_pass(
         .to(torch.bfloat16)
     )
 
-    with torch.no_grad():
-        projected_actions  = action_proj.predict_action(action_hidden.detach(), modality_id)
-        predicted_dactions = shead(img_cur, img_past, projected_actions)
+    projected_actions  = action_proj.predict_action(action_hidden, modality_id)
+    predicted_dactions = shead(img_cur, img_past, projected_actions)
 
     predicted_actions = delta_to_pose(predicted_dactions)
 
@@ -500,6 +499,8 @@ def main(cfg: Config) -> None:
     shead, action_proj = load_support_modules(vla.module, device)
     shead.eval()
     action_proj.eval()
+    shead.requires_grad_(False)
+    action_proj.requires_grad_(False)
 
     if _rank == 0:
         trainable = [p for p in vla.parameters() if p.requires_grad]
@@ -520,12 +521,12 @@ def main(cfg: Config) -> None:
     num_patches = (
         vla.module.base_model.model.vision_backbone.get_num_patches()
         * vla.module.base_model.model.vision_backbone.get_num_images_in_input()
-    ) + 1
+    )
 
     wandb_run = setup_wandb(world_size)
 
     metrics_queues = {k: deque(maxlen=_train_params.grad_accumulation_steps)
-                      for k in ("loss", "mse_obj", "mse_smooth")}
+                      for k in ("loss", "mse_action", "mse_delta", "mse_obj", "mse_smooth")}
     optimiser.zero_grad()
     step  = 0
     epoch = 0
