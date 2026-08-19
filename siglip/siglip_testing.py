@@ -66,12 +66,16 @@ IG_STEPS = 50
 # Map each language instruction to the folder containing its test images.
 # Add or remove entries as needed.
 INSTRUCTION_DIRS = {
-    "navigate to the fence": "/home/vla-cap/data/siglip_test/navigate_to_fence",
-    "go to the gate":        "/home/vla-cap/data/siglip_test/go_to_gate",
+    "Follow the fence on your right":   "/home/vla-cap/vla-capstone-ros-ws/images/fence_right",
+    "Follow the fence on your left":    "/home/vla-cap/vla-capstone-ros-ws/images/fence_left",
+    "Follow along the road":            "/home/vla-cap/vla-capstone-ros-ws/images/road",
+    "Follow the perimeter of the shed": "/home/vla-cap/vla-capstone-ros-ws/images/shed",
 }
 
 # All outputs are saved here as {instruction_slug}/{image_stem}_siglip_maps.png
-OUT_DIR = "/home/vla-cap/data/siglip_results"
+# Repo-local: <ag_vla>/siglip/results, resolved from this file's location so it
+# works regardless of the current working directory.
+OUT_DIR = str(Path(__file__).resolve().parent / "results")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
