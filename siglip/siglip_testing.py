@@ -66,9 +66,9 @@ IG_STEPS = 50
 # Map each language instruction to the folder containing its test images.
 # Add or remove entries as needed.
 INSTRUCTION_DIRS = {
-    "Follow the fence on your right":   "/home/vla-cap/vla-capstone-ros-ws/images/fence_right",
+    "Fence":   "/home/vla-cap/vla-capstone-ros-ws/images/fence_right",
     "Follow the fence on your left":    "/home/vla-cap/vla-capstone-ros-ws/images/fence_left",
-    "Follow along the road":            "/home/vla-cap/vla-capstone-ros-ws/images/road",
+    "Asphalt":            "/home/vla-cap/vla-capstone-ros-ws/images/road",
     "Follow the perimeter of the shed": "/home/vla-cap/vla-capstone-ros-ws/images/shed",
 }
 
@@ -187,10 +187,19 @@ def compute_self_attention_map(
     → gives (N,) "total attention received" saliency per patch
     → reshaped to (GRID_H, GRID_W) and min-max normalised.
     """
-    la = LayerActivation(wrapper, wrapper.siglip.blocks[-1].attn.attn_drop)
-
-    with torch.no_grad():
-        activation = la.attribute(pixel_values)   # (B, heads, N, N)
+    # timm ships this block with fused attention (F.scaled_dot_product_attention),
+    # which never calls the attn_drop submodule — so Captum's hook would capture
+    # nothing.  Temporarily force the explicit softmax→attn_drop path so the hook
+    # fires, then restore the original setting to leave the IG map unaffected.
+    last_attn = wrapper.siglip.blocks[-1].attn
+    fused_was = last_attn.fused_attn
+    last_attn.fused_attn = False
+    try:
+        la = LayerActivation(wrapper, last_attn.attn_drop)
+        with torch.no_grad():
+            activation = la.attribute(pixel_values)   # (B, heads, N, N)
+    finally:
+        last_attn.fused_attn = fused_was
 
     attn = activation[0].detach().cpu().float()   # (heads, N, N)
     saliency = attn.mean(0).sum(0).numpy()        # (N,) column-sum of mean-head attn
