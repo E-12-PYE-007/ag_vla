@@ -1,25 +1,25 @@
 #!/bin/bash
 
 # The job name shown in the queue
-#SBATCH --job-name=ag-vla-draft-test
+#SBATCH --job-name=ag-vla-full
 
 # GPU selection
-#SBATCH -p gpu-a100-short
+#SBATCH -p gpu-a100
 
 # Number of GPUs
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 
-# Number of processes to launch
+# Number of processes to launch (one SLURM task; torchrun manages the 4 worker processes)
 #SBATCH --ntasks=1
 
 # Number of CPU cores
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=16
 
 # RAM
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 
-# Wall clock time-limit (short — just verifying end-to-end pipeline with real data)
-#SBATCH --time=00:30:00
+# Wall clock time-limit
+#SBATCH --time=7-00:00:00
 
 # stdout output
 #SBATCH -o slurm-%j.out
@@ -55,12 +55,7 @@ source ${PROJECT_DIR}/venvs/training/finetune/bin/activate
 cd $SLURM_SUBMIT_DIR
 
 torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE training/finetune/draft2.py \
-    --paths.data_dir  ${PROJECT_DIR}/pt_samples \
-    --paths.out_dir   ${PROJECT_DIR}/out/draft2-test \
-    --data.max_samples 30 \
-    --train.max_steps 20 \
-    --train.save_freq 10 \
-    --train.eval_freq 5 \
-    --train.log_freq  1
+    --paths.data_dir ${PROJECT_DIR}/pt_samples \
+    --paths.out_dir  ${PROJECT_DIR}/out/draft2
 
 my-job-stats -v -d

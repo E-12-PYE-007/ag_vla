@@ -85,10 +85,16 @@ class TrainingConfig:
 
 
 @dataclass
+class DataConfig:
+    max_samples: int = 0  # 0 = use all samples
+
+
+@dataclass
 class Config:
     paths: PathConfig        = field(default_factory=PathConfig)
     lora:  LoraAdapterConfig = field(default_factory=LoraAdapterConfig)
     train: TrainingConfig    = field(default_factory=TrainingConfig)
+    data:  DataConfig        = field(default_factory=DataConfig)
 
 
 def delta_to_pose(delta: torch.Tensor) -> torch.Tensor:
@@ -311,6 +317,9 @@ def load_dataset(data_dir: str, processor, rank: int, world_size: int) -> Tuple:
     if not files:
         raise FileNotFoundError(f"No .pt sample files found in {data_dir}")
 
+    if _data_params.max_samples > 0:
+        files = files[:_data_params.max_samples]
+
     n_val       = max(1, int(len(files) * _train_params.val_split))
     train_files = files[n_val:]
     val_files   = files[:n_val]
@@ -478,7 +487,7 @@ def setup_wandb(world_size: int):
 
 @draccus.wrap()
 def main(cfg: Config) -> None:
-    global _paths, _lora_adapter, _train_params, _rank
+    global _paths, _lora_adapter, _train_params, _data_params, _rank
 
     _rank, world_size, local_rank = setup_distributed()
     device = f"cuda:{local_rank}"
@@ -486,6 +495,7 @@ def main(cfg: Config) -> None:
     _paths        = cfg.paths
     _lora_adapter = cfg.lora
     _train_params = cfg.train
+    _data_params  = cfg.data
 
     if not _paths.asyncvla_dir:
         _paths.asyncvla_dir = snapshot_download(ASYNCVLA_MODEL_ID)
