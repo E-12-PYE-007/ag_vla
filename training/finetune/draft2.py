@@ -410,7 +410,7 @@ def run_forward_pass(
     mse_delta  = nn.MSELoss()(daction_ref, predicted_dactions)
     mse_smooth = nn.MSELoss()(smooth_ref, predicted_actions)
 
-    loss = mse_action + mse_delta + mse_smooth  # J_im + J_sm (AsyncVLA paper)
+    loss = 0.5 * mse_action + 7.5 * mse_delta + 0.1 * mse_smooth
 
     metrics = {
         "loss":       loss.item(),
