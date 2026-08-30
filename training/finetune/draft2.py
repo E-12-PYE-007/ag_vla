@@ -81,7 +81,7 @@ class TrainingConfig:
     num_steps_before_decay:  int   = 30_000
     gamma:                   float = 0.1
     num_workers:             int   = 4
-    val_split:               float = 0.1
+    val_split:               float = 0.2
 
 
 @dataclass
@@ -147,7 +147,11 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
         low_cpu_mem_usage=True,
     ).to(device)
 
-    target_modules = [name for name, m in vla.named_modules() if isinstance(m, nn.Linear)]
+    # LoRA only on LLM layers — vision backbone (DinoV2+SigLIP) is frozen separately
+    target_modules = [
+        name for name, m in vla.named_modules()
+        if isinstance(m, nn.Linear) and "vision_backbone" not in name
+    ]
     lora_config = LoraConfig(
         r=_lora_adapter.rank,
         lora_alpha=min(_lora_adapter.rank, _lora_adapter.lora_alpha),
@@ -157,6 +161,10 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
         use_dora=_lora_adapter.use_dora,
     )
     vla = get_peft_model(vla, lora_config)
+
+    # Freeze vision backbone (DinoV2 + SigLIP)
+    vla.base_model.model.vision_backbone.requires_grad_(False)
+
     if _rank == 0:
         vla.print_trainable_parameters()
 
@@ -216,7 +224,6 @@ class SampleDataset(Dataset):
     """
     Each .pt file is one sample:
         pixel_values  : (6, 224, 224)  — 2 camera images × 3 channels, VLA-normalised
-        obj_pose_norm : (2,)           — normalised goal (x, y)
         actions       : (8, 4)         — ground-truth trajectory (x, y, cosθ, sinθ)
         c_image       : (3, 96, 96)    — current image [0,1] for Edge_adapter
         p_image       : (3, 96, 96)    — past image [0,1] for Edge_adapter
@@ -290,7 +297,6 @@ def make_collate_fn(processor):
             "attention_mask_label": labels.ne(IGNORE_INDEX),
             "labels":               labels,
             "pixel_values":         torch.stack([s["pixel_values"] for s in samples]),
-            "obj_pose_norm":        torch.stack([s["obj_pose_norm"] for s in samples]),
             "goal_pose":            torch.zeros(len(samples), POSE_DIM),  # dummy — masked for modality 7
             "actions":              torch.stack([s["actions"] for s in samples]),
             "c_image":              torch.stack([s["c_image"] for s in samples]),
@@ -350,7 +356,6 @@ def run_forward_pass(
     img_past = _IMG_NORM(batch["p_image"]).to(device).to(torch.bfloat16)
 
     ground_truth_actions = batch["actions"].to(device).to(torch.bfloat16)
-    pose_goal = batch["obj_pose_norm"].to(device).to(torch.bfloat16)
 
     vla_context = torch.no_grad() if no_grad else torch.enable_grad()
     with vla_context, torch.autocast("cuda", dtype=torch.bfloat16):
@@ -392,24 +397,16 @@ def run_forward_pass(
     action_ref  = ground_truth_actions
     daction_ref = pose_to_delta(action_ref)
 
-    # Imitation loss: action reconstruction in pose space + delta space (all samples)
     mse_action = nn.MSELoss()(action_ref, predicted_actions)
     mse_delta  = nn.MSELoss()(daction_ref, predicted_dactions)
-    # Language-specific: goal position at final timestep
-    mse_obj    = nn.MSELoss()(pose_goal, predicted_actions[:, -1, :2])
-    # J_sm: trajectory smoothness regularisation
     mse_smooth = nn.MSELoss()(smooth_ref, predicted_actions)
 
-    loss = (0.5 * mse_action
-            + 0.5 * 15.0 * mse_delta
-            + 0.1 * mse_obj
-            + 0.1 * mse_smooth)
+    loss = mse_action + mse_delta + mse_smooth  # J_im + J_sm (AsyncVLA paper)
 
     metrics = {
         "loss":       loss.item(),
         "mse_action": mse_action.item(),
         "mse_delta":  mse_delta.item(),
-        "mse_obj":    mse_obj.item(),
         "mse_smooth": mse_smooth.item(),
     }
     return loss, metrics
@@ -507,17 +504,19 @@ def main(cfg: Config) -> None:
 
     shead, action_proj, pose_projector = load_support_modules(vla.module, device)
     shead.eval()
-    action_proj.eval()
     pose_projector.eval()
     shead.requires_grad_(False)
-    action_proj.requires_grad_(False)
     pose_projector.requires_grad_(False)
+    action_proj.train()
 
     if _rank == 0:
         trainable = [p for p in vla.parameters() if p.requires_grad]
         print(f"Total trainable params: {sum(p.numel() for p in trainable):,}")
 
-    optimiser = AdamW([p for p in vla.parameters() if p.requires_grad], lr=_train_params.learning_rate)
+    optimiser = AdamW(
+        [p for p in vla.parameters() if p.requires_grad] + list(action_proj.parameters()),
+        lr=_train_params.learning_rate,
+    )
     scheduler = MultiStepLR(optimiser, milestones=[_train_params.num_steps_before_decay], gamma=_train_params.gamma)
 
     data_dir = _paths.data_dir or (
@@ -537,7 +536,7 @@ def main(cfg: Config) -> None:
     wandb_run = setup_wandb(world_size)
 
     metrics_queues = {k: deque(maxlen=_train_params.grad_accumulation_steps)
-                      for k in ("loss", "mse_action", "mse_delta", "mse_obj", "mse_smooth")}
+                      for k in ("loss", "mse_action", "mse_delta", "mse_smooth")}
     optimiser.zero_grad()
     step  = 0
     epoch = 0
