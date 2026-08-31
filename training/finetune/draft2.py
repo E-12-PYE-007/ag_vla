@@ -1,5 +1,6 @@
 import contextlib
 import os
+import zipfile
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,6 +39,15 @@ from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.vla.constants import ACTION_DIM, IGNORE_INDEX, NUM_ACTIONS_CHUNK, POSE_DIM
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def _valid_pt(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            zf.testzip()
+        return True
+    except (zipfile.BadZipFile, OSError):
+        return False
 
 ASYNCVLA_MODEL_ID = "NHirose/AsyncVLA_release"
 ASYNCVLA_STEP     = 750_000
@@ -317,6 +327,10 @@ def load_dataset(data_dir: str, processor, rank: int, world_size: int) -> Tuple:
     files = sorted(Path(data_dir).glob("*.pt"))
     if not files:
         raise FileNotFoundError(f"No .pt sample files found in {data_dir}")
+
+    files = [f for f in files if _valid_pt(f)]
+    if not files:
+        raise RuntimeError(f"No valid .pt files found in {data_dir} (all corrupted?)")
 
     if _data_params.max_samples > 0:
         files = files[:_data_params.max_samples]
