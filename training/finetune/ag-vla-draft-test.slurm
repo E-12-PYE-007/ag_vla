@@ -7,7 +7,7 @@
 #SBATCH -p gpu-a100-short
 
 # Number of GPUs
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 
 # Number of processes to launch
 #SBATCH --ntasks=1
