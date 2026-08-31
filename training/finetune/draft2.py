@@ -73,12 +73,12 @@ class LoraAdapterConfig:
 class TrainingConfig:
     batch_size:              int   = 4
     learning_rate:           float = 5e-4
-    max_steps:               int   = 50_000
-    grad_accumulation_steps: int   = 1
-    save_freq:               int   = 5_000
-    log_freq:                int   = 100
-    eval_freq:               int   = 500
-    num_steps_before_decay:  int   = 30_000
+    max_steps:               int   = 10_000
+    grad_accumulation_steps: int   = 4
+    save_freq:               int   = 2_000
+    log_freq:                int   = 50
+    eval_freq:               int   = 200
+    num_steps_before_decay:  int   = 7_000
     gamma:                   float = 0.1
     num_workers:             int   = 4
     val_split:               float = 0.2
