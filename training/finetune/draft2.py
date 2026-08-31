@@ -131,7 +131,8 @@ def pose_to_delta(pose: torch.Tensor) -> torch.Tensor:
 
 
 def setup_distributed() -> Tuple[int, int, int]:
-    dist.init_process_group("nccl")
+    if not dist.is_initialized():
+        dist.init_process_group("nccl")
     rank       = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ["LOCAL_RANK"])
