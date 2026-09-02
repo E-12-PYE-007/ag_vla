@@ -19,7 +19,7 @@
 #SBATCH --mem=32G
 
 # Wall clock time-limit (short — just verifying end-to-end pipeline with real data)
-#SBATCH --time=00:30:00
+#SBATCH --time=00:15:00
 
 # stdout output
 #SBATCH -o slurm-%j.out

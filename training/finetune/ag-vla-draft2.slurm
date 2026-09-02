@@ -19,7 +19,7 @@
 #SBATCH --mem=128G
 
 # Wall clock time-limit
-#SBATCH --time=7-00:00:00
+#SBATCH --time=3-00:00:00
 
 # stdout output
 #SBATCH -o slurm-%j.out
