@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # The job name shown in the queue
-#SBATCH --job-name=ag-vla-draft-test
+#SBATCH --job-name=ag-vla-a100-test
 
 # GPU selection
 #SBATCH -p gpu-a100-short
@@ -54,9 +54,9 @@ source ${PROJECT_DIR}/venvs/training/finetune/bin/activate
 
 cd $SLURM_SUBMIT_DIR
 
-torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE training/finetune/draft2.py \
+torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE training/finetune/finetune.py \
     --paths.data_dir    ${PROJECT_DIR}/ag_vla/pt_samples_ego \
-    --paths.out_dir     ${PROJECT_DIR}/out/draft2-test \
+    --paths.out_dir     ${PROJECT_DIR}/out/a100-test \
     --data.max_samples  30 \
     --train.batch_size  1 \
     --train.max_steps   20 \

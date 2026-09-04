@@ -54,9 +54,9 @@ source ${PROJECT_DIR}/venvs/training/finetune/bin/activate
 
 cd $SLURM_SUBMIT_DIR
 
-torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE training/finetune/draft2.py \
+torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE training/finetune/finetune.py \
     --paths.data_dir                ${PROJECT_DIR}/ag_vla/pt_samples_ego \
-    --paths.out_dir                 ${PROJECT_DIR}/out/draft2 \
+    --paths.out_dir                 ${PROJECT_DIR}/out/a100 \
     --train.batch_size              2 \
     --train.grad_accumulation_steps 2
 
