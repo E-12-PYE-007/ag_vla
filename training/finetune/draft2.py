@@ -1,5 +1,6 @@
 import contextlib
 import os
+import random
 import zipfile
 from collections import deque
 from dataclasses import dataclass, field
@@ -334,6 +335,9 @@ def load_dataset(data_dir: str, processor, rank: int, world_size: int) -> Tuple:
 
     if _data_params.max_samples > 0:
         files = files[:_data_params.max_samples]
+
+    rng = random.Random(42)
+    rng.shuffle(files)
 
     n_val       = max(1, int(len(files) * _train_params.val_split))
     train_files = files[n_val:]
