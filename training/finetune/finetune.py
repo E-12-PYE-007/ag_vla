@@ -441,13 +441,14 @@ def run_forward_pass(
     return loss, metrics
 
 
-def save_checkpoint(step: int, vla) -> None:
+def save_checkpoint(step: int, vla, action_proj) -> None:
     if _rank != 0:
         return
     ckpt_dir    = Path(_paths.out_dir) / f"step-{step:07d}"
     adapter_dir = ckpt_dir / "lora_adapter"
     os.makedirs(adapter_dir, exist_ok=True)
     vla.module.save_pretrained(adapter_dir)
+    torch.save(action_proj.state_dict(), ckpt_dir / "action_proj.pt")
     print(f"Checkpoint saved → {ckpt_dir}")
 
 
@@ -620,7 +621,7 @@ def main(cfg: Config) -> None:
             if (weight_update_step > 0
                     and weight_update_step >= _train_params.save_start
                     and weight_update_step % _train_params.save_freq == 0):
-                save_checkpoint(weight_update_step, vla)
+                save_checkpoint(weight_update_step, vla, action_proj)
 
             if weight_update_step > 0 and weight_update_step % _train_params.eval_freq == 0:
                 val_metrics = validate(vla, action_proj, shead, pose_projector, val_loader, num_patches, device)
@@ -634,7 +635,7 @@ def main(cfg: Config) -> None:
             step += 1
 
             if weight_update_step >= _train_params.max_steps:
-                save_checkpoint(weight_update_step, vla)
+                save_checkpoint(weight_update_step, vla, action_proj)
                 if _rank == 0 and wandb_run:
                     wandb_run.finish()
                 dist.destroy_process_group()
