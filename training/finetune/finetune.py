@@ -166,10 +166,9 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
         low_cpu_mem_usage=True,
     ).to(device)
 
-    # LoRA only on LLM layers — vision backbone (DinoV2+SigLIP) is frozen separately
     target_modules = [
         name for name, m in vla.named_modules()
-        if isinstance(m, nn.Linear) and "vision_backbone" not in name
+        if isinstance(m, nn.Linear)
     ]
     lora_config = LoraConfig(
         r=_lora_adapter.rank,
@@ -180,9 +179,6 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
         use_dora=_lora_adapter.use_dora,
     )
     vla = get_peft_model(vla, lora_config)
-
-    # Freeze vision backbone (DinoV2 + SigLIP)
-    vla.base_model.model.vision_backbone.requires_grad_(False)
 
     if _rank == 0:
         vla.print_trainable_parameters()
