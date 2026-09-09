@@ -59,6 +59,7 @@ torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE training/finetune/finetune.py \
     --paths.out_dir                 ${PROJECT_DIR}/out/a100 \
     --train.batch_size              2 \
     --train.grad_accumulation_steps 2 \
-    --lora.rank                     32 \
+    --lora.rank                     64 \
+    --lora.lora_alpha               32
 
 my-job-stats -v -d
