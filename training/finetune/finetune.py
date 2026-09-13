@@ -162,11 +162,11 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
     ).to(device)
     vla.vision_backbone.set_num_images_in_input(NUM_IMAGES_IN_INPUT)
 
-    # LoRA on the LLM only; vision encoders and projector stay frozen. lm_head is skipped because the
-    # loss uses the last hidden states, which come before it, so it would never receive a gradient.
+    # LoRA on every Linear except lm_head: the loss uses the last hidden states, which come before it,
+    # so it would never receive a gradient.
     target_modules = [
         name for name, m in vla.named_modules()
-        if isinstance(m, nn.Linear) and name.startswith("language_model.") and name != "language_model.lm_head"
+        if isinstance(m, nn.Linear) and name != "language_model.lm_head"
     ]
     lora_config = LoraConfig(
         r=_lora_adapter.rank,
