@@ -1,7 +1,6 @@
 import contextlib
 import os
 import random
-import zipfile
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,20 +41,12 @@ from prismatic.vla.constants import ACTION_DIM, IGNORE_INDEX, NUM_ACTIONS_CHUNK,
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def _valid_pt(path: Path) -> bool:
-    try:
-        with zipfile.ZipFile(path) as zf:
-            zf.testzip()
-        return True
-    except (zipfile.BadZipFile, OSError):
-        return False
-
 ASYNCVLA_MODEL_ID   = "NHirose/AsyncVLA_release"
 ASYNCVLA_STEP       = 750_000
 NUM_IMAGES_IN_INPUT = 2  # observation + goal image; the attention mask assumes 2
 # Mean per-frame robot step in the training data (convert_to_pt.py). Target x, y are divided by it so one
 # waypoint step ≈ 1, the scale the frozen edge adapter was pretrained on. Deployment must multiply by it.
-WAYPOINT_SPACING_M  = 0.1221
+WAYPOINT_SPACING_M  = 0.1215
 
 WANDB_PROJECT = "aion-r6-vla-training"
 WANDB_ENTITY  = "e-12-pye-007-capstone-baddies"
@@ -93,7 +84,7 @@ class TrainingConfig:
     save_freq:               int   = 1_000
     save_start:              int   = 5_000
     log_freq:                int   = 50
-    eval_freq:               int   = 200
+    eval_freq:               int   = 500
     num_steps_before_decay:  int   = 10_500
     gamma:                   float = 0.1
     num_workers:             int   = 4
@@ -341,10 +332,6 @@ def load_dataset(data_dir: str, processor, rank: int, world_size: int) -> Tuple:
     if not files:
         raise FileNotFoundError(f"No .pt sample files found in {data_dir}")
 
-    files = [f for f in files if _valid_pt(f)]
-    if not files:
-        raise RuntimeError(f"No valid .pt files found in {data_dir} (all corrupted?)")
-
     # Split by episode so near-identical frames from one episode never land in both sets
     def episode_of(f: Path) -> str:
         return f.name.rsplit("__", 1)[0]
@@ -492,19 +479,13 @@ def validate(vla, action_proj, shead, pose_projector, val_loader: DataLoader, nu
     return totals
 
 
-def setup_wandb(world_size: int):
+def setup_wandb(world_size: int, run_name: str, effective_bs: int):
     if _rank != 0:
         return None
     return wandb.init(
         entity=WANDB_ENTITY,
         project=WANDB_PROJECT,
-        name=(
-            f"r{_lora_adapter.rank}"
-            f"_a{_lora_adapter.lora_alpha}"
-            f"_dora{int(_lora_adapter.use_dora)}"
-            f"_lr{_train_params.learning_rate}"
-            f"_bs{_train_params.batch_size * world_size}"
-        ),
+        name=run_name,
         config={
             "model":                  ASYNCVLA_MODEL_ID,
             "asyncvla_step":          ASYNCVLA_STEP,
@@ -514,7 +495,7 @@ def setup_wandb(world_size: int):
             "use_dora":               _lora_adapter.use_dora,
             "learning_rate":          _train_params.learning_rate,
             "batch_size":             _train_params.batch_size,
-            "effective_batch_size":   _train_params.batch_size * world_size,
+            "effective_batch_size":   effective_bs,
             "max_steps":              _train_params.max_steps,
             "grad_accumulation":      _train_params.grad_accumulation_steps,
             "num_steps_before_decay": _train_params.num_steps_before_decay,
@@ -591,7 +572,7 @@ def main(cfg: Config) -> None:
         * vla.module.base_model.model.vision_backbone.get_num_images_in_input()
     ) + 1  # +1 for goal-pose proprio token
 
-    wandb_run = setup_wandb(world_size)
+    wandb_run = setup_wandb(world_size, run_name, effective_bs)
 
     metrics_queues = {k: deque(maxlen=_train_params.grad_accumulation_steps)
                       for k in ("loss", "mse_action", "mse_delta", "mse_smooth")}
