@@ -50,8 +50,12 @@ def _valid_pt(path: Path) -> bool:
     except (zipfile.BadZipFile, OSError):
         return False
 
-ASYNCVLA_MODEL_ID = "NHirose/AsyncVLA_release"
-ASYNCVLA_STEP     = 750_000
+ASYNCVLA_MODEL_ID   = "NHirose/AsyncVLA_release"
+ASYNCVLA_STEP       = 750_000
+NUM_IMAGES_IN_INPUT = 2  # observation + goal image; the attention mask assumes 2
+# Mean per-frame robot step in the training data (convert_to_pt.py). Target x, y are divided by it so one
+# waypoint step ≈ 1, the scale the frozen edge adapter was pretrained on. Deployment must multiply by it.
+WAYPOINT_SPACING_M  = 0.1221
 
 WANDB_PROJECT = "aion-r6-vla-training"
 WANDB_ENTITY  = "e-12-pye-007-capstone-baddies"
@@ -165,6 +169,7 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
     ).to(device)
+    vla.vision_backbone.set_num_images_in_input(NUM_IMAGES_IN_INPUT)
 
     target_modules = [
         name for name, m in vla.named_modules()
@@ -238,8 +243,8 @@ def load_support_modules(vla_base, device: str) -> Tuple:
 class SampleDataset(Dataset):
     """
     Each .pt file is one sample:
-        pixel_values  : (6, 224, 224)  — 2 camera images × 3 channels, VLA-normalised
-        actions       : (8, 4)         — ground-truth trajectory (x, y, cosθ, sinθ)
+        pixel_values  : (6, 224, 224)  — one image, DINOv2- and SigLIP-normalised channels stacked
+        actions       : (8, 4)         — ground-truth trajectory (x, y in metres, cosθ, sinθ)
         c_image       : (3, 96, 96)    — current image [0,1] for Edge_adapter
         p_image       : (3, 96, 96)    — past image [0,1] for Edge_adapter
         instruction   : str            — language navigation goal
@@ -264,17 +269,22 @@ def make_collate_fn(processor):
         input_ids_list: List[torch.Tensor] = []
         labels_list:    List[torch.Tensor] = []
 
-        for s in samples:
-            actions_np = s["actions"].numpy()  # (8, 4)
+        actions = torch.stack([s["actions"] for s in samples])  # (B, 8, 4), x, y in metres
+        actions[..., :2] /= WAYPOINT_SPACING_M
+
+        for s, sample_actions in zip(samples, actions):
+            actions_np = sample_actions.numpy()  # (8, 4)
 
             # Build action chunk string: one call per timestep
             action_chunk_str = "".join(
                 action_tokenizer(actions_np[t]) for t in range(len(actions_np))
             )
 
-            # Full VLA prompt: instruction + action tokens (same format as sys2.py)
+            # AsyncVLA prompt template, e.g. "What action should the robot take to follow the fenceline?"
+            instruction = s["instruction"].strip().rstrip(".")
+            instruction = instruction[:1].lower() + instruction[1:]
             prompt_builder = PurePromptBuilder("openvla")
-            prompt_builder.add_turn("human", s["instruction"])
+            prompt_builder.add_turn("human", f"What action should the robot take to {instruction}?")
             prompt_builder.add_turn("gpt",   action_chunk_str)
 
             full_ids = torch.tensor(
@@ -297,7 +307,8 @@ def make_collate_fn(processor):
             labels_list.append(labels)
 
         def _pad(seqs: List[torch.Tensor], pad_val: int) -> torch.Tensor:
-            out = torch.full((len(seqs), max_len), pad_val, dtype=torch.long)
+            length = min(max(len(seq) for seq in seqs), max_len)
+            out = torch.full((len(seqs), length), pad_val, dtype=torch.long)
             for i, seq in enumerate(seqs):
                 l = min(len(seq), max_len)
                 out[i, :l] = seq[:l]
@@ -306,14 +317,18 @@ def make_collate_fn(processor):
         input_ids = _pad(input_ids_list, pad_id)
         labels    = _pad(labels_list,    IGNORE_INDEX)
 
+        # Goal-image slot is masked for language-only (modality 7); AsyncVLA fills it with the same frame
+        pixel_values = torch.stack([s["pixel_values"] for s in samples])
+        pixel_values = torch.cat([pixel_values] * NUM_IMAGES_IN_INPUT, dim=1)
+
         return {
             "input_ids":            input_ids,
             "attention_mask":       input_ids.ne(pad_id),
             "attention_mask_label": labels.ne(IGNORE_INDEX),
             "labels":               labels,
-            "pixel_values":         torch.stack([s["pixel_values"] for s in samples]),
+            "pixel_values":         pixel_values,
             "goal_pose":            torch.zeros(len(samples), POSE_DIM),  # dummy — masked for modality 7
-            "actions":              torch.stack([s["actions"] for s in samples]),
+            "actions":              actions,
             "c_image":              torch.stack([s["c_image"] for s in samples]),
             "p_image":              torch.stack([s["p_image"] for s in samples]),
             "goal_mask_select":     torch.full((len(samples),), 7),
@@ -330,15 +345,21 @@ def load_dataset(data_dir: str, processor, rank: int, world_size: int) -> Tuple:
     if not files:
         raise RuntimeError(f"No valid .pt files found in {data_dir} (all corrupted?)")
 
+    # Split by episode so near-identical frames from one episode never land in both sets
+    def episode_of(f: Path) -> str:
+        return f.name.rsplit("__", 1)[0]
+
+    episodes = sorted({episode_of(f) for f in files})
+    random.Random(42).shuffle(episodes)
+    val_episodes = set(episodes[:max(1, int(len(episodes) * _train_params.val_split))])
+    train_files  = [f for f in files if episode_of(f) not in val_episodes]
+    val_files    = [f for f in files if episode_of(f) in val_episodes]
+    if rank == 0:
+        print(f"Episodes: {len(episodes) - len(val_episodes)} train, {len(val_episodes)} val")
+
     if _data_params.max_samples > 0:
-        files = files[:_data_params.max_samples]
-
-    rng = random.Random(42)
-    rng.shuffle(files)
-
-    n_val       = max(1, int(len(files) * _train_params.val_split))
-    train_files = files[n_val:]
-    val_files   = files[:n_val]
+        train_files = train_files[:_data_params.max_samples]
+        val_files   = val_files[:max(1, int(_data_params.max_samples * _train_params.val_split))]
 
     collate_fn = make_collate_fn(processor)
 
@@ -592,14 +613,21 @@ def main(cfg: Config) -> None:
 
             for k, v in metrics.items():
                 metrics_queues[k].append(v)
+            step += 1
 
-            if sync_grads:
-                optimiser.step()
-                scheduler.step()
-                optimiser.zero_grad()
+            if not sync_grads:
+                continue
+
+            # action_proj runs outside DDP, so its gradients are not synced automatically
+            for p in action_proj.parameters():
+                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+            optimiser.step()
+            scheduler.step()
+            optimiser.zero_grad()
 
             weight_update_step = step // _train_params.grad_accumulation_steps
-            metrics_avg = {k: sum(d) / len(d) for k, d in metrics_queues.items() if d}
+            metrics_avg = {k: sum(d) / len(d) for k, d in metrics_queues.items()}
+            done = weight_update_step >= _train_params.max_steps
 
             if _rank == 0:
                 if weight_update_step % _train_params.log_freq == 0:
@@ -614,12 +642,11 @@ def main(cfg: Config) -> None:
                     step=weight_update_step,
                 )
 
-            if (weight_update_step > 0
-                    and weight_update_step >= _train_params.save_start
-                    and weight_update_step % _train_params.save_freq == 0):
+            if done or (weight_update_step >= _train_params.save_start
+                        and weight_update_step % _train_params.save_freq == 0):
                 save_checkpoint(weight_update_step, vla, action_proj)
 
-            if weight_update_step > 0 and weight_update_step % _train_params.eval_freq == 0:
+            if weight_update_step % _train_params.eval_freq == 0:
                 val_metrics = validate(vla, action_proj, shead, pose_projector, val_loader, num_patches, device)
                 if _rank == 0:
                     print(
@@ -628,10 +655,7 @@ def main(cfg: Config) -> None:
                     )
                     wandb.log({"val/" + k: v for k, v in val_metrics.items()}, step=weight_update_step)
 
-            step += 1
-
-            if weight_update_step >= _train_params.max_steps:
-                save_checkpoint(weight_update_step, vla, action_proj)
+            if done:
                 if _rank == 0 and wandb_run:
                     wandb_run.finish()
                 dist.destroy_process_group()

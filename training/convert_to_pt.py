@@ -1,8 +1,10 @@
 """
 Convert raw episode directories into per-sample .pt files for finetune.py.
 
-Each anchor frame j gets one .pt file.  The delay between p_image (frame j)
-and c_image (frame k ≈ t_j + delay) is sampled uniformly from DELAYS.
+For each frame k with NUM_WAYPOINTS future frames, one .pt file is written:
+  actions  = robot poses at frames k+1..k+NUM_WAYPOINTS in frame k's ego frame (metres)
+  c_image  = frame k (current image for the edge adapter)
+  p_image / pixel_values = frame j = k - lt, with lt sampled from 0..MAX_DELAY_FRAMES (stale VLA image)
 """
 
 import json
@@ -15,7 +17,8 @@ import torchvision.transforms.functional as TVF
 from PIL import Image
 from torchvision import transforms
 
-DELAYS = [0.2, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0]
+NUM_WAYPOINTS    = 8
+MAX_DELAY_FRAMES = 3
 
 # ── Prismatic image transform (from AsyncVLA preprocessor_config.json) ────────
 # Fused DinoV2 + SigLIP backbone: apply_transform returns (6, 224, 224) for
@@ -40,13 +43,6 @@ _to_tensor_96 = transforms.Compose([
     transforms.Resize((96, 96)),
     transforms.ToTensor(),  # → [0, 1]
 ])
-
-
-def find_nearest_frame(timestamps: np.ndarray, target_t: float) -> int:
-    """Return index of the frame closest to target_t, or -1 if target_t is past episode end."""
-    if target_t > timestamps[-1]:
-        return -1
-    return int(np.argmin(np.abs(timestamps - target_t)))
 
 
 def _load_episode_meta(episode_dir: Path):
@@ -76,74 +72,57 @@ def _load_episode_meta(episode_dir: Path):
     return instruction, image_names
 
 
-def _load_ego_actions(poses_path: Path) -> list:
-    """
-    Load per-frame ego-centric action chunks from poses.jsonl.
-
-    Returns a list of length N where each entry is either:
-        np.ndarray (8, 4)  [x_m, y_m, cos(yaw), sin(yaw)] in robot ego frame
-        None               if the frame has no valid action_chunk
-    """
-    result = []
+def _load_poses(poses_path: Path) -> tuple[list[str], np.ndarray]:
+    """Per-frame image path and robot pose [x, y, yaw] (world frame) from poses.jsonl."""
+    image_names, poses = [], []
     with open(poses_path) as f:
         for line in f:
-            frame = json.loads(line)
-            try:
-                rp = frame["action_chunk"]["relative_poses"]
-                if len(rp) != 8:
-                    result.append(None)
-                    continue
-                waypoints = np.array(
-                    [[x, y, np.cos(yaw), np.sin(yaw)] for x, y, yaw in rp],
-                    dtype=np.float32,
-                )
-                result.append(waypoints)
-            except (KeyError, TypeError, ValueError):
-                result.append(None)
-    return result
+            row = json.loads(line)
+            _, x, y, yaw = row["pose"]  # [timestamp, x, y, yaw]
+            image_names.append(f"img/{row['image']}")
+            poses.append([x, y, yaw])
+    return image_names, np.array(poses, dtype=np.float64)
 
 
-def process_episode(episode_dir: Path, out_dir: Path) -> int:
+def _future_waypoints(poses: np.ndarray, k: int) -> np.ndarray:
+    """Poses at frames k+1..k+NUM_WAYPOINTS in frame k's ego frame: (NUM_WAYPOINTS, 4) [x, y, cosθ, sinθ]."""
+    x0, y0, yaw0 = poses[k]
+    future = poses[k + 1 : k + 1 + NUM_WAYPOINTS]
+    dx, dy = future[:, 0] - x0, future[:, 1] - y0
+    c, s = np.cos(yaw0), np.sin(yaw0)
+    dyaw = future[:, 2] - yaw0
+    return np.stack(
+        [c * dx + s * dy, -s * dx + c * dy, np.cos(dyaw), np.sin(dyaw)], axis=1
+    ).astype(np.float32)
+
+
+def process_episode(episode_dir: Path, out_dir: Path, episode_id: str | None = None) -> tuple[int, np.ndarray]:
+    """Write samples for one episode. Returns (samples written, per-frame step distances in metres).
+
+    episode_id prefixes every filename (default: folder name) and must be unique across the dataset.
+    """
+    episode_id = episode_id or episode_dir.name
+    no_steps = np.empty(0)
+
     instruction, image_names = _load_episode_meta(episode_dir)
     if instruction is None:
         print(f"  [skip] no manifest or metadata found in {episode_dir.name}")
-        return 0
+        return 0, no_steps
 
     poses_path = episode_dir / "poses.jsonl"
-    ts_path    = episode_dir / "timestamps.npy"
-
     if not poses_path.exists():
         print(f"  [skip] poses.jsonl not found in {episode_dir.name}")
-        return 0
+        return 0, no_steps
 
-    timestamps = np.load(ts_path)      # (N,)
-    N          = len(timestamps)
+    pose_image_names, poses = _load_poses(poses_path)
+    if pose_image_names != image_names:
+        print(f"  [skip] poses.jsonl images do not match postprocessed_samples order in {episode_dir.name}")
+        return 0, no_steps
 
-    if len(image_names) != N:
-        print(f"  [skip] image count {len(image_names)} != timestamps {N} in {episode_dir.name}")
-        return 0
-
-    # Ego-centric actions from poses.jsonl: (N,) list of (8,4) arrays or None
-    actions = _load_ego_actions(poses_path)
-    if len(actions) != N:
-        print(f"  [skip] poses count {len(actions)} != timestamps {N} in {episode_dir.name}")
-        return 0
-
-    saved      = 0
-    episode_id = episode_dir.name
-
-    for j in range(N):
-        delay    = random.choice(DELAYS)
-        target_t = timestamps[j] + delay
-        k        = find_nearest_frame(timestamps, target_t)
-
-        if k == -1:
-            k = find_nearest_frame(timestamps, timestamps[j] + delay / 2)
-            if k == -1:
-                break
-
-        if actions[k] is None:
-            continue  # skip frames with missing action_chunk
+    saved = 0
+    for k in range(len(poses) - NUM_WAYPOINTS):
+        lt = random.randint(0, min(k, MAX_DELAY_FRAMES))
+        j  = k - lt
 
         try:
             p_pil = Image.open(episode_dir / image_names[j]).convert("RGB")
@@ -153,22 +132,21 @@ def process_episode(episode_dir: Path, out_dir: Path) -> int:
 
         sample = {
             "instruction":  instruction,
-            "pixel_values": apply_transform(p_pil),              # (6, 224, 224) fused DinoV2+SigLIP
-            "c_image":      _to_tensor_96(c_pil),                # (3, 96, 96)  fresh frame for Edge_adapter
-            "p_image":      _to_tensor_96(p_pil),                # (3, 96, 96)  stale frame for Edge_adapter
-            "actions":      torch.from_numpy(actions[k]).float(), # (8, 4) ego-centric [x_m, y_m, cosθ, sinθ]
+            "pixel_values": apply_transform(p_pil),                          # (6, 224, 224) stale frame for the VLA
+            "c_image":      _to_tensor_96(c_pil),                            # (3, 96, 96)  current frame for Edge_adapter
+            "p_image":      _to_tensor_96(p_pil),                            # (3, 96, 96)  stale frame for Edge_adapter
+            "actions":      torch.from_numpy(_future_waypoints(poses, k)),   # (8, 4) metres, ego frame of frame k
         }
 
-        delay_tag = f"{int(delay * 10):03d}"
-        fname = f"{episode_id}__j{j:04d}_k{k:04d}_d{delay_tag}.pt"
-        torch.save(sample, out_dir / fname)
+        torch.save(sample, out_dir / f"{episode_id}__j{j:04d}_k{k:04d}_lt{lt}.pt")
         saved += 1
 
-    return saved
+    steps = np.linalg.norm(np.diff(poses[:, :2], axis=0), axis=1)
+    return saved, steps
 
 
 # ── Configure paths here before running ──────────────────────────────────────
-EPISODES_DIR = Path("./")         # directory whose subdirs are episode folders
+EPISODES_DIR = Path("./")         # searched recursively for episode folders containing poses.jsonl
 OUT_DIR      = Path("./pt_data")  # where to write .pt files
 SEED         = 42
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,22 +154,30 @@ SEED         = 42
 
 def main():
     random.seed(SEED)
-    np.random.seed(SEED)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    episode_dirs = sorted(d for d in EPISODES_DIR.iterdir() if d.is_dir())
+    episode_dirs = sorted(p.parent for p in EPISODES_DIR.rglob("poses.jsonl"))
     if not episode_dirs:
-        raise RuntimeError(f"No subdirectories found in {EPISODES_DIR}")
+        raise RuntimeError(f"No episode folders with poses.jsonl found under {EPISODES_DIR}")
 
-    total = 0
+    total, all_steps, seen_names = 0, [], set()
     for i, ep_dir in enumerate(episode_dirs):
-        print(f"[{i+1}/{len(episode_dirs)}] {ep_dir.name}")
-        n = process_episode(ep_dir, OUT_DIR)
+        # The same folder name in two batches is a different recording, so keep filenames unique
+        episode_id = ep_dir.name
+        if ep_dir.name in seen_names:
+            episode_id = f"{ep_dir.name}--{ep_dir.relative_to(EPISODES_DIR).parts[0]}"
+        seen_names.add(ep_dir.name)
+
+        print(f"[{i+1}/{len(episode_dirs)}] {episode_id}")
+        n, steps = process_episode(ep_dir, OUT_DIR, episode_id)
         print(f"  → {n} samples")
         total += n
+        if n:
+            all_steps.append(steps)
 
     print(f"\nDone — {total} samples written to {OUT_DIR}")
+    print(f"Mean per-frame step (waypoint spacing S): {np.concatenate(all_steps).mean():.4f} m")
 
 
 if __name__ == "__main__":

@@ -55,7 +55,7 @@ source ${PROJECT_DIR}/venvs/training/finetune/bin/activate
 cd $SLURM_SUBMIT_DIR
 
 torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE training/finetune/finetune.py \
-    --paths.data_dir    ${PROJECT_DIR}/ag_vla/pt_samples_ego \
+    --paths.data_dir    ${PROJECT_DIR}/ag_vla/pt_data \
     --paths.out_dir     ${PROJECT_DIR}/out/a100-test \
     --data.max_samples  30 \
     --train.batch_size  1 \
