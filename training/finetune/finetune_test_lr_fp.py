@@ -20,8 +20,14 @@ step count and takes roughly twice as long as A or B.
 Each arm runs as a separate torchrun process so memory, W&B state and the process group are fully
 isolated between them; a crash in one arm does not poison the next.
 
+--body-frame re-expresses the waypoints in the robot's frame of travel rather than the camera's
+(see to_body_frame in finetune.py) and prefixes every run name "body_". It is constant across the
+three arms, so it does not confound A vs B vs C — but it does change the labels, so a --body-frame
+run is NOT comparable to the bf16 baseline or to a camera-frame run of these same arms.
+
 Usage (not under torchrun — this script launches torchrun itself):
     python training/finetune/finetune_test_lr_fp.py
+    python training/finetune/finetune_test_lr_fp.py --body-frame
     python training/finetune/finetune_test_lr_fp.py --dry-run
 """
 
@@ -77,6 +83,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", default=f"{project_dir}/ag_vla/pt_data" if project_dir else "")
     parser.add_argument("--out-root", default=f"{project_dir}/out" if project_dir else "./out")
+    parser.add_argument("--body-frame", action="store_true",
+                        help="re-express waypoints in the robot's frame of travel instead of the "
+                             "camera's (see to_body_frame in finetune.py); tags the arms '_body'")
     parser.add_argument("--dry-run", action="store_true", help="print the commands without running them")
     parser.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                         help="extra finetune.py args appended to every arm; must come last")
@@ -85,9 +94,23 @@ def main() -> int:
     if not args.data_dir:
         parser.error("--data-dir is required when PROJECT_DIR is not set")
 
+    # The waypoint frame is held constant across the arms, so it never confounds the A/B/C
+    # comparison; it only changes which labels all three are fitting.
+    # "body" leads the run name rather than trailing it: W&B truncates the tail in list views, which
+    # is exactly where a suffix would be lost when both jobs run concurrently.
+    common = list(COMMON_ARGS)
+    prefix = ""
+    if args.body_frame:
+        # Passed only when set: an empty --paths.run_prefix would be a needless parsing risk on the
+        # camera-frame job, which must keep working exactly as before.
+        common += ["--data.body_frame_actions", "true", "--paths.run_prefix", "body"]
+        prefix = "body"
+
     out_base = Path(args.out_root) / device_name() / datetime.now().strftime("%Y%m%d")
-    print(f"Arms: {', '.join(tag for tag, _ in ARMS)}")
-    print(f"Checkpoints → {out_base}/<run name>/\n")
+    marker = f"{prefix}_" if prefix else ""
+    print(f"Arms: {', '.join(marker + '<cfg>_' + tag for tag, _ in ARMS)}")
+    print(f"Waypoint frame: {'robot (body)' if args.body_frame else 'camera (as recorded)'}")
+    print(f"Checkpoints → {out_base}/{marker}<run name>/\n")
 
     results = {}
     for i, (tag, arm_args) in enumerate(ARMS, start=1):
@@ -96,7 +119,7 @@ def main() -> int:
             "--paths.data_dir", args.data_dir,
             "--paths.out_dir",  str(out_base),
             "--paths.run_tag",  tag,
-            *COMMON_ARGS, *arm_args, *args.extra,
+            *common, *arm_args, *args.extra,
         ]
         print(f"=== [{i}/{len(ARMS)}] {tag} ===")
         print(" ".join(cmd), flush=True)

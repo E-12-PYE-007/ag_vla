@@ -47,6 +47,9 @@ NUM_IMAGES_IN_INPUT = 2  # observation + goal image; the attention mask assumes 
 # Mean per-frame robot step in the training data (convert_to_pt.py). Target x, y are divided by it so one
 # waypoint step ≈ 1, the scale the frozen edge adapter was pretrained on. Deployment must multiply by it.
 WAYPOINT_SPACING_M  = 0.1215
+# Below this first-step length the label carries no reliable direction, so body-frame rotation is
+# skipped for that sample (~0.8% of the dataset).
+BODY_FRAME_MIN_STEP_M = 0.02
 
 WANDB_PROJECT = "aion-r6-vla-training"
 WANDB_ENTITY  = "e-12-pye-007-capstone-baddies"
@@ -65,6 +68,7 @@ class PathConfig:
     asyncvla_dir: str = ""  # defaults to HF snapshot of ASYNCVLA_MODEL_ID; set to override
     data_dir:     str = ""  # directory of per-sample .pt files; defaults to $PROJECT_DIR/data
     run_tag:      str = ""  # appended to the run name; when set, out_dir is used as given (caller owns the layout)
+    run_prefix:   str = ""  # prepended to the run name, so it survives truncation in the W&B list view
 
 
 @dataclass
@@ -98,6 +102,9 @@ class TrainingConfig:
 @dataclass
 class DataConfig:
     max_samples: int = 0  # 0 = use all samples
+    # Re-express the waypoints in the robot's frame of travel rather than the camera's. See
+    # to_body_frame: the recorded pose is the camera prim's, whose axis sits ~5 deg right of travel.
+    body_frame_actions: bool = False
 
 
 @dataclass
@@ -139,6 +146,46 @@ def pose_to_delta(pose: torch.Tensor) -> torch.Tensor:
             [ct * dx + st * dy, -st * dx + ct * dy, torch.cos(dtheta), torch.sin(dtheta)], dim=-1
         ))
     return torch.stack(delta_list, dim=1)
+
+
+def to_body_frame(actions: torch.Tensor) -> torch.Tensor:
+    """Rotate waypoints from the camera's frame into the robot's frame of travel.
+
+    poses.jsonl records the pose of the camera prim (pose_source: isaac_camera_pose_debug), and that
+    camera is mounted ~5.11 deg to the right of the direction of travel — confirmed independently by
+    odometry and by the focus of expansion in the images. So waypoints rotated by the recorded yaw
+    are tilted ~5 deg to the left of the robot's own frame, which reads as a steady left drift once a
+    body-frame controller consumes them (~0.09 m by waypoint 8 on straight driving).
+
+    The correction needs no extra data: waypoint 1 is the chord to the next pose, and a chord bisects
+    the heading change across it, so subtracting half of dyaw_1 recovers the travel direction at
+    frame 0. Measured against a central-difference reference over the poses, this leaves a mean error
+    of 0.009 m (vs 0.026 m for subtracting a flat 5.11 deg, which cannot follow the turn-rate term).
+
+    actions: (B, T, 4) — x, y in metres plus cos/sin of dyaw. The dyaw pair is a difference between
+    two headings, so it is identical in either frame and is passed through untouched.
+    """
+    fwd, lat = actions[..., 0], actions[..., 1]                       # (B, T)
+
+    # Read the bearing off the first waypoint far enough from the origin to have one. Usually that
+    # is waypoint 1, but ~0.9% of chunks open on a stalled frame while still travelling ~0.84 m over
+    # the chunk, so falling back to the next waypoint keeps them rather than leaving them unrotated
+    # in the camera frame. Every waypoint is measured from frame k, so the chord-bisect holds for
+    # any index: the chord to waypoint i bisects the heading change accumulated by waypoint i.
+    usable = torch.hypot(fwd, lat) >= BODY_FRAME_MIN_STEP_M           # (B, T)
+    idx    = torch.argmax(usable.int(), dim=1)                        # first usable, 0 if none
+    rows   = torch.arange(actions.shape[0], device=actions.device)
+
+    phi = (torch.atan2(lat[rows, idx], fwd[rows, idx])
+           - 0.5 * torch.atan2(actions[rows, idx, 3], actions[rows, idx, 2]))
+    # A chunk that never moves gives atan2 no direction to read at all; leave those samples alone.
+    phi = torch.where(usable.any(dim=1), phi, torch.zeros_like(phi))
+
+    cos, sin = torch.cos(phi).unsqueeze(1), torch.sin(phi).unsqueeze(1)
+    rotated = actions.clone()
+    rotated[..., 0] = cos * fwd + sin * lat
+    rotated[..., 1] = -sin * fwd + cos * lat
+    return rotated
 
 
 def setup_distributed() -> Tuple[int, int, int]:
@@ -273,6 +320,8 @@ def make_collate_fn(processor):
         labels_list:    List[torch.Tensor] = []
 
         actions = torch.stack([s["actions"] for s in samples])  # (B, 8, 4), x, y in metres
+        if _data_params.body_frame_actions:
+            actions = to_body_frame(actions)  # while still in metres, for the min-step guard
         actions[..., :2] /= WAYPOINT_SPACING_M
 
         for s, sample_actions in zip(samples, actions):
@@ -521,6 +570,10 @@ def setup_wandb(world_size: int, run_name: str, effective_bs: int):
             "grad_accumulation":      _train_params.grad_accumulation_steps,
             "num_steps_before_decay": _train_params.num_steps_before_decay,
             "world_size":             world_size,
+            # The two axes that distinguish concurrently running experiments; group/filter on these
+            # rather than parsing the run name.
+            "fp32_trainable":         _train_params.fp32_trainable,
+            "waypoint_frame":         "body" if _data_params.body_frame_actions else "camera",
         },
     )
 
@@ -544,7 +597,8 @@ def main(cfg: Config) -> None:
 
     effective_bs = _train_params.batch_size * world_size * _train_params.grad_accumulation_steps
     run_name = (
-        f"r{_lora_adapter.rank}"
+        (f"{_paths.run_prefix}_" if _paths.run_prefix else "")
+        + f"r{_lora_adapter.rank}"
         f"_a{_lora_adapter.lora_alpha}"
         f"_dora{int(_lora_adapter.use_dora)}"
         f"_lr{_train_params.learning_rate}"
