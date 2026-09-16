@@ -64,6 +64,7 @@ class PathConfig:
     out_dir:      str = "./out/finetune"
     asyncvla_dir: str = ""  # defaults to HF snapshot of ASYNCVLA_MODEL_ID; set to override
     data_dir:     str = ""  # directory of per-sample .pt files; defaults to $PROJECT_DIR/data
+    run_tag:      str = ""  # appended to the run name; when set, out_dir is used as given (caller owns the layout)
 
 
 @dataclass
@@ -79,16 +80,19 @@ class LoraAdapterConfig:
 class TrainingConfig:
     batch_size:              int   = 4
     learning_rate:           float = 5e-4
-    max_steps:               int   = 15_000
+    max_steps:               int   = 10_000
     grad_accumulation_steps: int   = 4
-    save_freq:               int   = 1_000
-    save_start:              int   = 5_000
+    save_freq:               int   = 500
+    save_start:              int   = 0
     log_freq:                int   = 50
     eval_freq:               int   = 500
-    num_steps_before_decay:  int   = 10_500
+    num_steps_before_decay:  int   = 7_000
     gamma:                   float = 0.1
     num_workers:             int   = 4
     val_split:               float = 0.2
+    # Keep trainable weights (LoRA + action_proj) in fp32 while the forward pass stays bf16 under autocast.
+    # In bf16 an AdamW update below ~0.4% of a weight rounds away entirely, which froze some parameters solid.
+    fp32_trainable:          bool  = False
 
 
 @dataclass
@@ -178,13 +182,18 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
     )
     vla = get_peft_model(vla, lora_config)
 
+    if _train_params.fp32_trainable:
+        for p in vla.parameters():
+            if p.requires_grad:
+                p.data = p.data.float()
+
     if _rank == 0:
         vla.print_trainable_parameters()
 
     return vla, processor
 
 
-def _load_support_module(module_class, name: str, device: str, **kwargs) -> nn.Module:
+def _load_support_module(module_class, name: str, device: str, dtype=torch.bfloat16, **kwargs) -> nn.Module:
     module = module_class(**kwargs)
 
     ckpt_path = Path(_paths.asyncvla_dir) / f"{name}--{ASYNCVLA_STEP}_checkpoint.pt"
@@ -201,7 +210,7 @@ def _load_support_module(module_class, name: str, device: str, **kwargs) -> nn.M
     if _rank == 0:
         print(f"[{name}] loaded from {ckpt_path}")
 
-    return module.to(torch.bfloat16).to(device)
+    return module.to(dtype).to(device)
 
 
 def load_support_modules(vla_base, device: str) -> Tuple:
@@ -221,6 +230,7 @@ def load_support_modules(vla_base, device: str) -> Tuple:
         Proj_Actiontokens,
         "action_proj",
         device,
+        dtype=torch.float32 if _train_params.fp32_trainable else torch.bfloat16,
         input_dim=llm_dim,
         hidden_dim=llm_dim,
         action_dim=1024,
@@ -447,6 +457,12 @@ def run_forward_pass(
     return loss, metrics
 
 
+def grad_norm(params: List[nn.Parameter]) -> float:
+    """L2 norm of the gradients, reduced in fp32 so bf16 rounding does not distort it."""
+    norms = [p.grad.detach().float().norm() for p in params if p.grad is not None]
+    return torch.norm(torch.stack(norms)).item() if norms else 0.0
+
+
 def save_checkpoint(step: int, vla, action_proj) -> None:
     if _rank != 0:
         return
@@ -530,8 +546,13 @@ def main(cfg: Config) -> None:
         f"_dora{int(_lora_adapter.use_dora)}"
         f"_lr{_train_params.learning_rate}"
         f"_bs{effective_bs}"
+        + (f"_{_paths.run_tag}" if _paths.run_tag else "")
     )
-    _paths.out_dir = str(Path(_paths.out_dir) / run_name / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    # With a run_tag the caller has already laid out the parent directories, so only the run name is added
+    _paths.out_dir = str(
+        Path(_paths.out_dir) / run_name if _paths.run_tag
+        else Path(_paths.out_dir) / run_name / datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
 
     if _rank == 0:
         os.makedirs(_paths.out_dir, exist_ok=True)
@@ -550,14 +571,13 @@ def main(cfg: Config) -> None:
     pose_projector.requires_grad_(False)
     action_proj.train()
 
-    if _rank == 0:
-        trainable = [p for p in vla.parameters() if p.requires_grad]
-        print(f"Total trainable params: {sum(p.numel() for p in trainable):,}")
+    lora_params   = [p for p in vla.parameters() if p.requires_grad]
+    action_params = list(action_proj.parameters())
 
-    optimiser = AdamW(
-        [p for p in vla.parameters() if p.requires_grad] + list(action_proj.parameters()),
-        lr=_train_params.learning_rate,
-    )
+    if _rank == 0:
+        print(f"Total trainable params: {sum(p.numel() for p in lora_params + action_params):,}")
+
+    optimiser = AdamW(lora_params + action_params, lr=_train_params.learning_rate)
     scheduler = MultiStepLR(optimiser, milestones=[_train_params.num_steps_before_decay], gamma=_train_params.gamma)
 
     data_dir = _paths.data_dir or (
@@ -604,6 +624,11 @@ def main(cfg: Config) -> None:
             # action_proj runs outside DDP, so its gradients are not synced automatically
             for p in action_proj.parameters():
                 dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+
+            # Gradients are synced across ranks by here, so every rank sees the same norms
+            norm_lora   = grad_norm(lora_params)
+            norm_action = grad_norm(action_params)
+
             optimiser.step()
             scheduler.step()
             optimiser.zero_grad()
@@ -617,11 +642,17 @@ def main(cfg: Config) -> None:
                     print(
                         f"[step {weight_update_step:>6}/{_train_params.max_steps}]  "
                         + "  ".join(f"{k}={v:.4f}" for k, v in metrics_avg.items())
+                        + f"  |g|_lora={norm_lora:.3f}  |g|_act={norm_action:.3f}"
                         + f"  lr={scheduler.get_last_lr()[0]:.2e}"
                     )
                 wandb.log(
                     {"train/" + k: v for k, v in metrics_avg.items()}
-                    | {"lr": scheduler.get_last_lr()[0]},
+                    | {
+                        "grad_norm/lora":        norm_lora,
+                        "grad_norm/action_proj": norm_action,
+                        "grad_norm/total":       (norm_lora ** 2 + norm_action ** 2) ** 0.5,
+                        "lr":                    scheduler.get_last_lr()[0],
+                    },
                     step=weight_update_step,
                 )
 
