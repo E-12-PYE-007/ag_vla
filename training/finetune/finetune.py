@@ -429,8 +429,11 @@ def run_forward_pass(
         .to(torch.bfloat16)
     )
 
-    projected_actions  = action_proj.predict_action(action_hidden, modality_id)
-    predicted_dactions = shead(img_cur, img_past, projected_actions)
+    proj_dtype = next(action_proj.parameters()).dtype
+    projected_actions  = action_proj.predict_action(
+        action_hidden.to(proj_dtype), modality_id.to(proj_dtype)
+    )
+    predicted_dactions = shead(img_cur, img_past, projected_actions.to(torch.bfloat16))
 
     predicted_actions = delta_to_pose(predicted_dactions)
 
