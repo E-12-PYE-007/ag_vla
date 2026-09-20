@@ -56,7 +56,7 @@ source ${PROJECT_DIR}/venvs/training/finetune/bin/activate
 
 cd $SLURM_SUBMIT_DIR
 
-DATA_DIR=${PROJECT_DIR}/ag_vla/pt_data
+DATA_DIR=${PROJECT_DIR}/ag_vla/pt_body_fixed
 OUT_ROOT=${PROJECT_DIR}/out/lr-fp-body-smoke-test-${SLURM_JOB_ID}
 
 # Same three arms and the same code path as the real job, just tiny. batch_size and

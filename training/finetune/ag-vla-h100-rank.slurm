@@ -1,16 +1,13 @@
 #!/bin/bash
 
-# Same three fp32 arms as ag-vla-h100-lr-fp.slurm, but with the waypoints re-expressed in the
-# robot's frame of travel (--body-frame) instead of the camera's. The recorded pose is the camera
-# prim's and that camera sits ~5.11 deg right of travel, so the stored labels lean left by that much
-# once a body-frame controller consumes them. The fix is applied in the collate, so it needs no
-# reprocessed data: pt_data is used exactly as uploaded.
+# LoRA capacity sweep: rank 32 / 16 / 8, plus DoRA at rank 8. Learning rate (1e-4) and fp32 are
+# settled by the earlier sweep and held fixed, so only adapter capacity varies.
 #
-# Checkpoints and W&B runs are tagged "_body" and are NOT comparable to the camera-frame runs or to
-# the bf16 baseline - the labels differ. Compare A_fp32_body vs B/C_fp32_body only.
-
+# Run with --body-frame so rank32 reproduces the existing body-frame lr 1e-4 run and can be compared
+# against it. Drop the flag only if you are comparing against a camera-frame run instead.
+#
 # The job name shown in the queue
-#SBATCH --job-name=ag-vla-h100-lr-fp-body
+#SBATCH --job-name=ag-vla-h100-rank
 
 # GPU selection
 #SBATCH -p gpu-h100
@@ -18,7 +15,7 @@
 # Number of GPUs
 #SBATCH --gres=gpu:4
 
-# One SLURM task; finetune_test_lr_fp.py launches a torchrun job per arm
+# One SLURM task; finetune_test_rank.py launches a torchrun job per arm
 #SBATCH --ntasks=1
 
 # Number of CPU cores (4 dataloader workers per rank x 4 ranks)
@@ -27,8 +24,9 @@
 # RAM
 #SBATCH --mem=128G
 
-# Wall clock time-limit. Arms A and B are ~2h each and C ~4h (it processes twice the samples per
-# update), so ~8-10h total with fp32 overhead; 24h leaves a wide margin.
+# Wall clock time-limit. Three LoRA arms at ~2.5-3h each plus a DoRA arm that is 20-30% slower
+# (it recomputes a column norm over the full frozen weight every forward pass) is ~11-12h total.
+# 24h leaves a wide margin.
 #SBATCH --time=1-00:00:00
 
 # stdout output
@@ -65,7 +63,7 @@ source ${PROJECT_DIR}/venvs/training/finetune/bin/activate
 cd $SLURM_SUBMIT_DIR
 
 # Plain python, not torchrun: this script launches one torchrun job per arm, back to back.
-python training/finetune/finetune_test_lr_fp.py \
+python training/finetune/finetune_test_rank.py \
     --data-dir ${PROJECT_DIR}/ag_vla/pt_body_fixed \
     --out-root ${PROJECT_DIR}/out \
     --body-frame

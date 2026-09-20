@@ -1,6 +1,7 @@
 import contextlib
 import os
 import random
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -78,6 +79,12 @@ class LoraAdapterConfig:
     dropout:         float = 0.0
     initial_weights: str   = "gaussian"
     use_dora:        bool  = False
+    # Comma-separated substrings; any Linear whose module path contains one gets no LoRA, leaving it
+    # frozen at its pretrained weights. Counts at rank 32: "vision_backbone.featurizer." is DINOv2
+    # (12.6M), "vision_backbone.fused_featurizer." is SigLIP (16.0M), "projector." is the vision->LLM
+    # projector (1.0M), "language_model." is the LLM (80.0M). Note that the DINOv2 pattern does not
+    # match the SigLIP one, despite the shared word.
+    exclude:         str   = ""
 
 
 @dataclass
@@ -97,6 +104,10 @@ class TrainingConfig:
     # Keep trainable weights (LoRA + action_proj) in fp32 while the forward pass stays bf16 under autocast.
     # In bf16 an AdamW update below ~0.4% of a weight rounds away entirely, which froze some parameters solid.
     fp32_trainable:          bool  = False
+    # Leave action_proj (104.9M) at its pretrained weights. It was co-trained with the frozen shead,
+    # so fine-tuning it drifts it away from that pairing; freezing it preserves the pairing and forces
+    # all adaptation through the LoRA instead.
+    freeze_action_proj:      bool  = False
 
 
 @dataclass
@@ -219,6 +230,18 @@ def load_asyncvla_for_finetune(device: str) -> Tuple:
         name for name, m in vla.named_modules()
         if isinstance(m, nn.Linear) and name != "language_model.lm_head"
     ]
+
+    # Anything matching --lora.exclude gets no adapter, so it stays frozen at its pretrained weights.
+    patterns = [p.strip() for p in _lora_adapter.exclude.split(",") if p.strip()]
+    if patterns:
+        kept = [n for n in target_modules if not any(p in n for p in patterns)]
+        if not kept:
+            raise ValueError(f"--lora.exclude {_lora_adapter.exclude!r} excluded every target module")
+        if _rank == 0:
+            print(f"LoRA excluding {len(target_modules) - len(kept)} of {len(target_modules)} "
+                  f"modules matching {patterns}")
+        target_modules = kept
+
     lora_config = LoraConfig(
         r=_lora_adapter.rank,
         lora_alpha=min(_lora_adapter.rank, _lora_adapter.lora_alpha),
@@ -574,6 +597,11 @@ def setup_wandb(world_size: int, run_name: str, effective_bs: int):
             # rather than parsing the run name.
             "fp32_trainable":         _train_params.fp32_trainable,
             "waypoint_frame":         "body" if _data_params.body_frame_actions else "camera",
+            # Without these the arms of a freezing sweep are identical in config and can only be
+            # told apart by name, which truncates in W&B list views.
+            "lora_exclude":           _lora_adapter.exclude or "(none)",
+            "freeze_action_proj":     _train_params.freeze_action_proj,
+            "arm":                    _paths.run_tag or "(none)",
         },
     )
 
@@ -626,10 +654,14 @@ def main(cfg: Config) -> None:
     pose_projector.eval()
     shead.requires_grad_(False)
     pose_projector.requires_grad_(False)
-    action_proj.train()
+    if _train_params.freeze_action_proj:
+        action_proj.eval()
+        action_proj.requires_grad_(False)
+    else:
+        action_proj.train()
 
     lora_params   = [p for p in vla.parameters() if p.requires_grad]
-    action_params = list(action_proj.parameters())
+    action_params = [p for p in action_proj.parameters() if p.requires_grad]
 
     if _rank == 0:
         print(f"Total trainable params: {sum(p.numel() for p in lora_params + action_params):,}")
@@ -659,6 +691,12 @@ def main(cfg: Config) -> None:
     step  = 0
     epoch = 0
 
+    # Wall-clock timing. sec_per_step is measured over each log_freq window rather than cumulatively,
+    # so it reflects the current rate and is not dragged down by model loading or a slow first step.
+    # It is what makes per-arm cost comparable -- DoRA, for instance, should show up as a slower step.
+    train_start = time.monotonic()
+    window_start, window_step = train_start, 0
+
     while True:
         train_sampler.set_epoch(epoch)
         for batch in train_loader:
@@ -678,9 +716,11 @@ def main(cfg: Config) -> None:
             if not sync_grads:
                 continue
 
-            # action_proj runs outside DDP, so its gradients are not synced automatically
-            for p in action_proj.parameters():
-                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+            # action_proj runs outside DDP, so its gradients are not synced automatically.
+            # action_params is empty when it is frozen, so this is a no-op then.
+            for p in action_params:
+                if p.grad is not None:
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
 
             # Gradients are synced across ranks by here, so every rank sees the same norms
             norm_lora   = grad_norm(lora_params)
@@ -694,6 +734,12 @@ def main(cfg: Config) -> None:
             metrics_avg = {k: sum(d) / len(d) for k, d in metrics_queues.items()}
             done = weight_update_step >= _train_params.max_steps
 
+            now      = time.monotonic()
+            elapsed  = now - train_start
+            steps_in_window = weight_update_step - window_step
+            sec_per_step = (now - window_start) / steps_in_window if steps_in_window > 0 else 0.0
+            remaining = sec_per_step * max(_train_params.max_steps - weight_update_step, 0)
+
             if _rank == 0:
                 if weight_update_step % _train_params.log_freq == 0:
                     print(
@@ -701,6 +747,7 @@ def main(cfg: Config) -> None:
                         + "  ".join(f"{k}={v:.4f}" for k, v in metrics_avg.items())
                         + f"  |g|_lora={norm_lora:.3f}  |g|_act={norm_action:.3f}"
                         + f"  lr={scheduler.get_last_lr()[0]:.2e}"
+                        + f"  {sec_per_step:.2f}s/step  eta={remaining / 3600:.1f}h"
                     )
                 wandb.log(
                     {"train/" + k: v for k, v in metrics_avg.items()}
@@ -709,9 +756,17 @@ def main(cfg: Config) -> None:
                         "grad_norm/action_proj": norm_action,
                         "grad_norm/total":       (norm_lora ** 2 + norm_action ** 2) ** 0.5,
                         "lr":                    scheduler.get_last_lr()[0],
+                        # Measured over the last log_freq window, so it tracks the current rate and
+                        # is comparable across arms (a DoRA arm should show a slower step here).
+                        "time/sec_per_step":     sec_per_step,
+                        "time/elapsed_h":        elapsed / 3600,
+                        "time/eta_h":            remaining / 3600,
                     },
                     step=weight_update_step,
                 )
+
+            if steps_in_window > 0:
+                window_start, window_step = now, weight_update_step
 
             if done or (weight_update_step >= _train_params.save_start
                         and weight_update_step % _train_params.save_freq == 0):
@@ -727,7 +782,17 @@ def main(cfg: Config) -> None:
                     wandb.log({"val/" + k: v for k, v in val_metrics.items()}, step=weight_update_step)
 
             if done:
+                if _rank == 0:
+                    total_h = (time.monotonic() - train_start) / 3600
+                    print(f"Run finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
+                          f"training took {total_h:.2f}h "
+                          f"({3600 * total_h / max(weight_update_step, 1):.2f}s/step)")
                 if _rank == 0 and wandb_run:
+                    # Summary fields, so total cost per arm is readable from the W&B run table
+                    # without opening the charts.
+                    wandb_run.summary["time/total_h"] = total_h
+                    wandb_run.summary["time/mean_sec_per_step"] = (
+                        3600 * total_h / max(weight_update_step, 1))
                     wandb_run.finish()
                 dist.destroy_process_group()
                 return
