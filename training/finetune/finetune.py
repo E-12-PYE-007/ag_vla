@@ -104,6 +104,9 @@ class TrainingConfig:
     # Keep trainable weights (LoRA + action_proj) in fp32 while the forward pass stays bf16 under autocast.
     # In bf16 an AdamW update below ~0.4% of a weight rounds away entirely, which froze some parameters solid.
     fp32_trainable:          bool  = False
+    # Varies LoRA initialisation and data ordering. Two runs differing only in seed measure the
+    # between-run noise floor, which is what says whether a val gap of ~0.02 means anything.
+    seed:                    int   = 0
     # Leave action_proj (104.9M) at its pretrained weights. It was co-trained with the frozen shead,
     # so fine-tuning it drifts it away from that pairing; freezing it preserves the pairing and forces
     # all adaptation through the LoRA instead.
@@ -434,7 +437,8 @@ def load_dataset(data_dir: str, processor, rank: int, world_size: int) -> Tuple:
 
     collate_fn = make_collate_fn(processor)
 
-    train_sampler = DistributedSampler(SampleDataset(train_files), num_replicas=world_size, rank=rank, shuffle=True)
+    train_sampler = DistributedSampler(SampleDataset(train_files), num_replicas=world_size, rank=rank,
+                                       shuffle=True, seed=_train_params.seed)
     val_sampler   = DistributedSampler(SampleDataset(val_files),   num_replicas=world_size, rank=rank, shuffle=False)
 
     train_loader = DataLoader(
@@ -602,6 +606,7 @@ def setup_wandb(world_size: int, run_name: str, effective_bs: int):
             "lora_exclude":           _lora_adapter.exclude or "(none)",
             "freeze_action_proj":     _train_params.freeze_action_proj,
             "arm":                    _paths.run_tag or "(none)",
+            "seed":                   _train_params.seed,
         },
     )
 
@@ -644,6 +649,11 @@ def main(cfg: Config) -> None:
         print(f"Run started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  world_size={world_size}")
 
     dist.barrier()
+
+    # Before the model is built, so LoRA's gaussian init is covered too.
+    torch.manual_seed(_train_params.seed)
+    torch.cuda.manual_seed_all(_train_params.seed)
+    random.seed(_train_params.seed)
 
     vla, processor = load_asyncvla_for_finetune(device)
     vla = DDP(vla, device_ids=[local_rank], find_unused_parameters=True)
